@@ -1,0 +1,46 @@
+ 
+
+name: bikes_${dataset.resolution}
+sampling:
+  fov: 49.13
+  ray_start: 0.65
+  ray_end: 1.75
+  dist: uniform
+  radius: 1.2
+  horizontal_stddev: 3.141592653589793
+  vertical_stddev: 0.2617993877991494
+  horizontal_mean: 3.141592653589793
+  vertical_mean: 1.3089969389957472
+cube_scale: 1
+white_back: false
+last_back: false
+# c_dim: 513
+
+# sampling:
+#   fov: 30.0
+#   ray_start: 0.75
+#   ray_end: 1.25
+#   dist: spherical_uniform
+#   radius: 1.0
+#   horizontal_stddev: 3.141592653589793
+#   vertical_stddev: 0.7417649320975901
+#   horizontal_mean: 0.0
+#   vertical_mean: 0.7417649320975901
+# cube_scale: 0.475
+# white_back: true
+# last_back: false
+
+# sampling:
+#   fov: 49.13
+#   ray_start: 0.55
+#   ray_end: 1.75
+#   dist: uniform
+#   radius: 1.2
+#   horizontal_stddev: 3.141592653589793
+#   vertical_stddev: 0.2617993877991494
+#   horizontal_mean: 3.141592653589793
+#   vertical_mean: 1.3089969389957472
+# cube_scale: 1.0
+# white_back: true
+# last_back: false
+# c_dim: 513

@@ -1,0 +1,15 @@
+ 
+name: cars_${dataset.resolution}
+sampling:
+  fov: 49.13
+  ray_start: 0.65
+  ray_end: 1.75
+  dist: uniform
+  radius: 1.2
+  horizontal_stddev: 3.141592653589793
+  vertical_stddev: 0.2617993877991494
+  horizontal_mean: 3.141592653589793
+  vertical_mean: 1.3089969389957472
+cube_scale: 1.0
+white_back: false
+last_back: false
