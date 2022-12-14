@@ -104,7 +104,6 @@ def training_loop(
         print()
         print('Num images: ', len(training_set))
         print('Image shape:', training_set.image_shape)
-        print('Label shape:', training_set.label_shape)
         print()
 
     # Construct networks.
@@ -237,11 +236,10 @@ def training_loop(
         if not resume_whole_state:
             print('Exporting sample images/videos...')
             vis = dnnlib.EasyDict()
-            vis.grid_size, images, vis.labels, vis.camera_angles, masks, vis.points = setup_snapshot_image_grid(training_set=training_set, cfg=cfg)
+            vis.grid_size, images, vis.camera_angles, masks, vis.points = setup_snapshot_image_grid(training_set=training_set, cfg=cfg)
             save_image_grid(images[:,:3,...], os.path.join(run_dir, 'reals.jpg'), drange=[0,255], grid_size=vis.grid_size)
             save_image_grid(masks[:,0:1,...], os.path.join(run_dir, 'reals_mask.jpg'), drange=[0,1], grid_size=vis.grid_size)
-            vis.grid_z = torch.randn([vis.labels.shape[0], G.z_dim], device=device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, z_dim])
-            vis.grid_c = torch.from_numpy(vis.labels).to(device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, c_dim])
+            vis.grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, z_dim])
             vis.points = torch.from_numpy(vis.points).to(device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, c_dim])
             vis.grid_camera_angles = torch.from_numpy(vis.camera_angles).to(device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, 3])
             save_filename = 'fakes_init.jpg'
@@ -255,8 +253,8 @@ def training_loop(
             save_filename_mask = f'fakes_resume_{cur_nimg:06d}_mask.jpg'
 
         with torch.no_grad():
-            images = torch.cat([G_ema(z=z, c=c, camera_angles=a, p=p, noise_mode='const').cpu() for z, c, a, p in zip(vis.grid_z, vis.grid_c, vis.grid_camera_angles, vis.points)]).numpy()
-            videos, tex_videos = generate_videos(G_ema, torch.stack(vis.grid_z).view(-1, G.z_dim), torch.stack(vis.grid_c).view(vis.labels.shape[0], G.c_dim), torch.stack(vis.points).view(vis.labels.shape[0], 30000, 6), model_name=cfg.model.name, return_tex=False) # [num_videos, num_frames, c, h, w]
+            images = torch.cat([G_ema(z=z, camera_angles=a, p=p, noise_mode='const').cpu() for z, a, p in zip(vis.grid_z, vis.grid_camera_angles, vis.points)]).numpy()
+            videos, tex_videos = generate_videos(G_ema, torch.stack(vis.grid_z).view(-1, G.z_dim), torch.stack(vis.points).view(images.shape[0], -1, 6), model_name=cfg.model.name, return_tex=False) # [num_videos, num_frames, c, h, w]
         save_image_grid(images[:,:3,...], os.path.join(run_dir, save_filename), drange=[-1,1], grid_size=vis.grid_size)
         save_image_grid(images[:,3:4,...], os.path.join(run_dir, save_filename_mask), drange=[0, 1], grid_size=vis.grid_size)
         save_videos(videos, os.path.join(run_dir, save_filename.replace('.jpg', '.mp4')))
@@ -299,20 +297,16 @@ def training_loop(
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
             batch = next(training_set_iterator)
-            real_img, real_mask, phase_real_c, phase_real_camera_angles, surface_points = batch['image'], batch['mask'], batch['label'], batch['camera_angles'], batch['pointcloud']
+            real_img, real_mask, phase_real_camera_angles, surface_points = batch['image'], batch['mask'], batch['camera_angles'], batch['pointcloud']
             real_img = (real_img.to(device).to(torch.float32) / 127.5 - 1)
             real_mask = real_mask.to(device).to(torch.float32)
             real_mask = (real_mask > 0).float()
             phase_surface_points = surface_points.split(batch_gpu)
             phase_real_img = torch.cat([real_img, real_mask], dim=1).split(batch_gpu)
-            phase_real_c = phase_real_c.to(device).split(batch_gpu)
             phase_real_camera_angles = phase_real_camera_angles.to(device).split(batch_gpu) # (batch_size // batch_gpu, [batch_gpu, 3])
             all_gen_z = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
             gen_cond_sample_idx = [np.random.randint(len(training_set)) for _ in range(len(phases) * batch_size)] # [num_phases * batch_size]
-            all_gen_c = [training_set.get_label(i) for i in gen_cond_sample_idx] # [num_phases * batch_size]
-            all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device) # [num_phases * batch_size]
-            all_gen_c = [phase_gen_c.split(batch_gpu) for phase_gen_c in all_gen_c.split(batch_size)] # [num_phases, batch_size // batch_gpu, batch_gpu]
             if cfg.dataset.sampling.dist == 'custom':
                 all_gen_camera_angles = [training_set.get_camera_angles(i) for i in gen_cond_sample_idx] # [N, 3]
                 all_gen_camera_angles = torch.from_numpy(np.stack(all_gen_camera_angles)).pin_memory().to(device) # [N, 3]
@@ -331,8 +325,8 @@ def training_loop(
             all_gen_camera_angles_cond = [phase_cs.split(batch_gpu) for phase_cs in all_gen_camera_angles_cond.split(batch_size)]
 
         # Execute training phases.
-        all_data = zip(phases, all_gen_z, all_gen_c, all_gen_camera_angles, all_gen_camera_angles_cond)
-        for (phase, phase_gen_z, phase_gen_c, phase_gen_camera_angles, phase_gen_camera_angles_cond) in all_data:
+        all_data = zip(phases, all_gen_z, all_gen_camera_angles, all_gen_camera_angles_cond)
+        for (phase, phase_gen_z, phase_gen_camera_angles, phase_gen_camera_angles_cond) in all_data:
             if batch_idx % phase.interval != 0:
                 continue
             if phase.start_event is not None:
@@ -343,22 +337,18 @@ def training_loop(
             phase.module.requires_grad_(True)
             phase_data = zip(
                 phase_real_img,
-                phase_real_c,
                 phase_real_camera_angles,
                 phase_gen_z,
-                phase_gen_c,
                 phase_gen_camera_angles,
                 phase_gen_camera_angles_cond,
                 phase_surface_points
             )
-            for real_img, real_c, real_camera_angles, gen_z, gen_c, gen_camera_angles, gen_camera_angles_cond, points in phase_data:
+            for real_img, real_camera_angles, gen_z, gen_camera_angles, gen_camera_angles_cond, points in phase_data:
                 loss.accumulate_gradients(
                     phase=phase.name,
                     real_img=real_img,
-                    real_c=real_c,
                     real_camera_angles=real_camera_angles,
                     gen_z=gen_z,
-                    gen_c=gen_c,
                     gen_camera_angles=gen_camera_angles,
                     gen_camera_angles_cond=gen_camera_angles_cond,
                     gain=phase.interval,
@@ -447,8 +437,8 @@ def training_loop(
         # Save image snapshot.
         if (rank == 0) and (cfg.training.image_snap is not None) and (done or cur_tick % cfg.training.image_snap == 0):
             with torch.no_grad():
-                images = torch.cat([G_ema(z=z, c=c, camera_angles=a, p=p, noise_mode='const').cpu() for z, c, a, p in zip(vis.grid_z, vis.grid_c, vis.grid_camera_angles, vis.points)]).numpy()
-                videos, tex_videos = generate_videos(G_ema, torch.stack(vis.grid_z).view(-1, G.z_dim), torch.stack(vis.grid_c).view(vis.labels.shape[0], G.c_dim), torch.stack(vis.points).view(vis.labels.shape[0], 30000, 6), model_name=cfg.model.name, return_tex=False) # [num_videos, num_frames, c, h, w]
+                images = torch.cat([G_ema(z=z, camera_angles=a, p=p, noise_mode='const').cpu() for z, a, p in zip(vis.grid_z, vis.grid_camera_angles, vis.points)]).numpy()
+                videos, tex_videos = generate_videos(G_ema, torch.stack(vis.grid_z).view(-1, G.z_dim), torch.stack(vis.points).view(images.shape[0], -1, 6), model_name=cfg.model.name, return_tex=False) # [num_videos, num_frames, c, h, w]
             save_image_grid(images[:,:3,...], os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.jpg'), drange=[-1,1], grid_size=vis.grid_size)
             save_image_grid(images[:,3:4,...], os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_mask.jpg'), drange=[0,1], grid_size=vis.grid_size)
             save_videos(videos, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.mp4'))

@@ -39,8 +39,12 @@ def tri_plane_renderer(tex_x: torch.Tensor, coords: torch.Tensor, ray_d_world: t
 
     coords_normed = coords / 0.5
     sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
-    sigmas = torch.sigmoid(-sdfs / 0.005) / 0.005
-    
+    # sigmas = torch.sigmoid(-sdfs / 0.005) / 0.01
+
+    beta = 0.005
+    alpha = 1 / beta
+    sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
+
     # volume rgbs
     tex_feat = get_feat_from_triplane(coords, tex_x, scale=None)
     rgbs = texture_mlp(tex_feat) # [batch_size, num_points, out_dim]
@@ -113,22 +117,6 @@ class TriPlaneMLP(nn.Module):
         x = x.mean(dim=1).reshape(batch_size * num_points, feat_dim) # [batch_size * num_points, feat_dim]
         y_2 = self.model(x)
         y_2 = y_2.view(batch_size, num_points, self.dims[-1]) # [batch_size, num_points, backbone_out_dim]
-        """
-        if global_x is not None:
-            global_x = global_x.expand(-1,num_points,-1)
-            x = x.mean(dim=1).reshape(batch_size * num_points, feat_dim) # [batch_size * num_points, feat_dim]
-            model_input = torch.cat([coords.reshape(batch_size * num_points, 3), x, global_x.reshape(batch_size * num_points, global_feat_dim)], dim=1)
-        else:
-            x = x.mean(dim=1).reshape(batch_size * num_points, feat_dim) # [batch_size * num_points, feat_dim]
-            model_input = torch.cat([x, coords.reshape(batch_size * num_points, 3)], dim=1)
-        y_1 = self.model(model_input) # [batch_size * num_points, out_dim]
-        if global_x is not None:
-            model_second_input = torch.cat([y_1.reshape(batch_size * num_points, 3), x, global_x.reshape(batch_size * num_points, global_feat_dim)], dim=1)
-        else:
-            model_second_input = torch.cat([x, coords.reshape(batch_size * num_points, 3)], dim=1)
-        y_2 = self.model_second(model_second_input)
-        y_2 = y_2.view(batch_size, num_points, self.dims[-1]) # [batch_size, num_points, backbone_out_dim]
-        """
         misc.assert_shape(y_2, [batch_size, num_points, self.out_dim])
 
         return y_2
@@ -328,7 +316,7 @@ class SynthesisNetwork(torch.nn.Module):
         self.img_channels = img_channels
 
         self.fold_sdf = FoldSDF(feat_dim=256, 
-                                ckpt_path="/data/anjie/Projects/CanonicalVAE/logs/2022-11-16T16-36-17_foldsdf_with_chamfer_scratch_dpsr_spgan_vis/checkpoints/epoch=001679.ckpt",
+                                ckpt_path="/home/anjie/Projects/FoldSDF/logs/2022-12-11T01-10-43_dev_texturify_car/checkpoints/last.ckpt",
                                 ignore_keys=['dpsr'])
 
         # rgb
@@ -378,14 +366,26 @@ class SynthesisNetwork(torch.nn.Module):
         camera_angles: [batch_size, 3] --- yaw/pitch/roll angles (roll angles are never used)
         patch_params: Dict {scales: [batch_size, 2], offsets: [batch_size, 2]} --- patch parameters (when we do patchwise training)
         """
-        misc.assert_shape(camera_angles, [len(geo_ws), 3])
+        # misc.assert_shape(camera_angles, [len(geo_ws), 3])
+        if camera_angles.size(1) == 3:
+            radius = self.cfg.dataset.sampling.radius
+        elif camera_angles.size(1) == 5:
+            radius = camera_angles[:,3]
+            fov = camera_angles[:,4]
+            camera_angles = camera_angles[:,:3]
+            
+        else:
+            raise ValueError
+
+        # camera_angles[:, [1]] = torch.clamp(camera_angles[:, [1]], 1e-5, np.pi - 1e-5) # [batch_size, 1]
+
 
         if self.cfg.backbone == 'raw_planes':
             tex_feats = self.texture_decoder.repeat(len(tex_ws), 1, 1, 1) + tex_ws.sum() * 0.0 # [batch_size, 3, 256, 256]
         else:
             tex_feats = self.texture_decoder(tex_ws[:, :self.texture_decoder.num_ws], **block_kwargs) # [batch_size, feat_dim, tp_h, tp_w]
 
-        camera_angles[:, [1]] = torch.clamp(camera_angles[:, [1]], 1e-5, np.pi - 1e-5) # [batch_size, 1]
+        
         batch_size = geo_ws.shape[0]
         h = w = (self.train_resolution if self.training else self.test_resolution)
         fov = self.cfg.dataset.sampling.fov if fov is None else fov # [1] or [batch_size]
@@ -404,8 +404,8 @@ class SynthesisNetwork(torch.nn.Module):
 
         z_vals, rays_d_cam = get_initial_rays_trig(
             batch_size, num_steps, resolution=(h, w), device=geo_ws.device, ray_start=self.cfg.dataset.sampling.ray_start,
-            ray_end=self.cfg.dataset.sampling.ray_end, fov=fov, patch_params=patch_params)
-        c2w = compute_cam2world_matrix(camera_angles, self.cfg.dataset.sampling.radius) # [batch_size, 4, 4]
+            ray_end=self.cfg.dataset.sampling.ray_end, fov=fov, patch_params=patch_params, radius=radius)
+        c2w = compute_cam2world_matrix(camera_angles, radius) # [batch_size, 4, 4]
         points_world, z_vals, ray_d_world, ray_o_world = transform_points(z_vals=z_vals, ray_directions=rays_d_cam, c2w=c2w) # [batch_size, h * w, num_steps, 1], [?]
         points_world = points_world.reshape(batch_size, h * w * num_steps, 3) # [batch_size, h * w * num_steps, 3]
 
@@ -416,11 +416,7 @@ class SynthesisNetwork(torch.nn.Module):
             sdf_grid=sdf_grid,
         ) # [batch_size, h * w * num_steps, num_feats]
         coarse_output = coarse_output.view(batch_size, h * w, num_steps, rgb_sigma_out_dim) # [batch_size, h * w, num_steps, num_feats] | rgbs, sigmas, f_pts, b_pts
-        
         coarse_rgb_sigma = coarse_output[...,:rgb_sigma_out_dim]
-        # coarse_f_pts = coarse_output[..., rgb_sigma_out_dim:rgb_sigma_out_dim+3]
-        # coarse_b_pts = coarse_output[..., rgb_sigma_out_dim+3:rgb_sigma_out_dim+6]
-        # coarse_sdf = coarse_output[..., rgb_sigma_out_dim+6:rgb_sigma_out_dim+9]
 
         # <==================================================>
         # HIERARCHICAL SAMPLING START
@@ -454,9 +450,6 @@ class SynthesisNetwork(torch.nn.Module):
         fine_output = fine_output.view(batch_size, h * w, num_steps, rgb_sigma_out_dim) # [batch_size, h * w, num_steps, num_feats]
 
         fine_rgb_sigma = fine_output[...,:rgb_sigma_out_dim]
-        # fine_f_pts = fine_output[..., rgb_sigma_out_dim:rgb_sigma_out_dim+3]
-        # fine_b_pts = fine_output[..., rgb_sigma_out_dim+3:rgb_sigma_out_dim+6]
-        # fine_sdf = fine_output[..., rgb_sigma_out_dim+6:rgb_sigma_out_dim+9]
         fine_points = fine_points.reshape(batch_size, h * w, num_steps, 3) # [batch_size, h * w, num_steps, 3]
 
         # Combine coarse and fine points and sort by z_values
@@ -488,7 +481,6 @@ class SynthesisNetwork(torch.nn.Module):
         img = torch.cat([img, mask], dim=1)
 
         if verbose:
-
             info = {}
             return img, info
         else:
@@ -530,11 +522,11 @@ class Generator(torch.nn.Module):
     def progressive_update(self, cur_kimg: float):
         self.synthesis.progressive_update(cur_kimg)
 
-    def forward(self, z, c, p, camera_angles, camera_angles_cond=None, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
+    def forward(self, z, p, camera_angles, c=None, camera_angles_cond=None, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
         geo_z = z[...,:self.geo_dim]
         tex_z = z[...,-self.tex_dim:]
-        geo_ws = self.geo_mapping(geo_z, c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
-        tex_ws = self.tex_mapping(tex_z, c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+        geo_ws = self.geo_mapping(geo_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+        tex_ws = self.tex_mapping(tex_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
         img = self.synthesis(geo_ws, tex_ws, points=p, camera_angles=camera_angles, update_emas=update_emas, **synthesis_kwargs)
         return img
 

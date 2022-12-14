@@ -1,5 +1,3 @@
- 
-
 path: data/${dataset.name}.zip
 c_dim: 0
 sampling: ~ # You must define it explicitly

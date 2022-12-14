@@ -102,7 +102,8 @@ def fancy_integration(rgb_sigma, z_vals, noise_std=0.5, last_back=False, white_b
 
 #----------------------------------------------------------------------------
 
-def get_initial_rays_trig(batch_size: int, num_steps: int, device, fov: float, resolution: Tuple[int, int], ray_start: float, ray_end: float, patch_params: Dict=None):
+
+def get_initial_rays_trig(batch_size: int, num_steps: int, device, fov: float, resolution: Tuple[int, int], ray_start: float, ray_end: float, patch_params: Dict=None, radius: torch.Tensor=None):
     """
     Returns sample points, z_vals, and ray directions in camera space.
 
@@ -132,14 +133,43 @@ def get_initial_rays_trig(batch_size: int, num_steps: int, device, fov: float, r
     fov_rad = fov.unsqueeze(1).expand(compute_batch_size, 1) / 360 * 2 * np.pi # [compute_batch_size, 1]
     z = -torch.ones((compute_batch_size, h * w), device=device) / torch.tan(fov_rad * 0.5) # [compute_batch_size, h * w]
     rays_d_cam = normalize(torch.stack([x, y, z], dim=2), dim=2) # [compute_batch_size, h * w, 3]
-    z_vals = torch.linspace(ray_start, ray_end, num_steps, device=device) # [num_steps]
-    z_vals = z_vals.reshape(1, 1, num_steps, 1).repeat(compute_batch_size, h * w, 1, 1) # [1, h * w, num_steps, 1]
+    
+    if radius is not None and type(radius) is not float and type(fov) is not float:
+        assert compute_batch_size != 1
+        z_vals = batch_linspace(radius - 0.55, radius + 0.55, num_steps).transpose(0,1).to(device) # [batch_size, num_steps]
+        z_vals = z_vals.reshape(batch_size, 1, num_steps, 1).repeat(1, h * w, 1, 1) # [1, h * w, num_steps, 1]
+
+    else:
+        z_vals = torch.linspace(ray_start, ray_end, num_steps, device=device) # [num_steps]
+        z_vals = z_vals.reshape(1, 1, num_steps, 1).repeat(compute_batch_size, h * w, 1, 1) # [1, h * w, num_steps, 1]
 
     if compute_batch_size == 1:
         z_vals = z_vals.repeat(batch_size, 1, 1, 1) # [batch_size, h * w, num_steps, 1]
         rays_d_cam = rays_d_cam.repeat(batch_size, 1, 1) # [batch_size, h * w, 3]
 
     return z_vals, rays_d_cam
+
+#----------------------------------------------------------------------------
+
+@torch.jit.script
+def batch_linspace(start: torch.Tensor, stop: torch.Tensor, num: int):
+    """
+    Creates a tensor of shape [num, *start.shape] whose values are evenly spaced from start to end, inclusive.
+    Replicates but the multi-dimensional bahaviour of numpy.linspace in PyTorch.
+    """
+    # create a tensor of 'num' steps from 0 to 1
+    steps = torch.arange(num, dtype=torch.float32, device=start.device) / (num - 1)
+    
+    # reshape the 'steps' tensor to [-1, *([1]*start.ndim)] to allow for broadcastings
+    # - using 'steps.reshape([-1, *([1]*start.ndim)])' would be nice here but torchscript
+    #   "cannot statically infer the expected size of a list in this contex", hence the code below
+    for i in range(start.ndim):
+        steps = steps.unsqueeze(-1)
+    
+    # the output starts at 'start' and increments until 'stop' in each dimension
+    out = start[None] + steps*(stop - start)[None]
+    return out
+    
 
 #----------------------------------------------------------------------------
 
@@ -243,14 +273,18 @@ def compute_camera_origins(angles: torch.Tensor, radius: float) -> torch.Tensor:
 
     yaw = angles[:, [0]] # [batch_size, 1]
     pitch = angles[:, [1]] # [batch_size, 1]
-
     assert yaw.ndim == 2, f"Wrong shape: {yaw.shape}, {pitch.shape}"
     assert yaw.shape == pitch.shape, f"Wrong shape: {yaw.shape}, {pitch.shape}"
 
-    origins = torch.zeros((yaw.shape[0], 3), device=yaw.device)
-    origins[:, [0]] = radius * torch.sin(pitch) * torch.cos(yaw)
-    origins[:, [2]] = radius * torch.sin(pitch) * torch.sin(yaw)
-    origins[:, [1]] = radius * torch.cos(pitch)
+    origins = torch.zeros((yaw.shape[0], 3), device=yaw.device).float()
+    if type(radius) == float:
+        origins[:, [0]] = (radius * torch.sin(pitch) * torch.cos(yaw)).float()
+        origins[:, [2]] = (radius * torch.sin(pitch) * torch.sin(yaw)).float()
+        origins[:, [1]] = (radius * torch.cos(pitch)).float()
+    else:
+        origins[:, [0]] = (radius[:,None] * torch.sin(pitch) * torch.cos(yaw)).float()
+        origins[:, [2]] = (radius[:,None] * torch.sin(pitch) * torch.sin(yaw)).float()
+        origins[:, [1]] = (radius[:,None] * torch.cos(pitch)).float()
 
     return origins
 

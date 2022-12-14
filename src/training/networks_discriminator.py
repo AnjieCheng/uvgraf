@@ -280,7 +280,7 @@ class Discriminator(torch.nn.Module):
         self.mask_b4 = DiscriminatorEpilogue(
             channels_dict[4], cmap_dim=cmap_dim, resolution=4, **epilogue_kwargs, **common_kwargs)
 
-    def forward(self, img, c, patch_params: torch.Tensor=None, camera_angles: torch.Tensor=None, update_emas=False, **block_kwargs):
+    def forward(self, img, c: torch.Tensor=None, patch_params: torch.Tensor=None, camera_angles: torch.Tensor=None, update_emas=False, **block_kwargs):
         _ = update_emas # unused
         batch_size, _, h, w = img.shape
 
@@ -290,7 +290,10 @@ class Discriminator(torch.nn.Module):
             patch_params_cond = torch.cat([patch_scales[:, [0]], patch_offsets], dim=1) # [batch_size, 3]
             misc.assert_shape(patch_params_cond, [batch_size, 3])
             patch_scale_embs = self.scalar_enc(patch_params_cond) # [batch_size, fourier_dim]
-            c = torch.cat([c, patch_scale_embs], dim=1) # [batch_size, c_dim + fourier_dim]
+            if c is not None:
+                c = torch.cat([c, patch_scale_embs], dim=1) # [batch_size, c_dim + fourier_dim]
+            else:
+                c = patch_scale_embs # [batch_size, c_dim + fourier_dim]
             hyper_mod_c = self.hyper_mod_mapping(z=None, c=patch_scale_embs) # [batch_size, 512]
         
         # Step 1: feed the mask image into the discriminator

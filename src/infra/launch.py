@@ -17,7 +17,7 @@ from src.infra.utils import create_project_dir, recursive_instantiate
 
 #----------------------------------------------------------------------------
 
-HYDRA_ARGS = "hydra.output_subdir=null hydra/job_logging=disabled hydra/hydra_logging=disabled hydra.job.chdir=True"
+HYDRA_ARGS = "hydra.output_subdir=null hydra/job_logging=disabled hydra/hydra_logging=disabled"
 
 #----------------------------------------------------------------------------
 

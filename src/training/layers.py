@@ -118,7 +118,7 @@ class MappingNetwork(torch.nn.Module):
         else:
             self.mean_camera_pose = None
 
-    def forward(self, z, c, camera_angles: torch.Tensor=None, truncation_psi=1, truncation_cutoff=None, update_emas=False):
+    def forward(self, z, c: torch.Tensor=None, camera_angles: torch.Tensor=None, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         if (not self.camera_scalar_enc is None) and (not self.training) and (camera_angles is None):
             camera_angles = self.mean_camera_pose.unsqueeze(0).repeat(len(z), 1) # [batch_size, 3]
 

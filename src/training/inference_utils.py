@@ -25,39 +25,18 @@ def setup_snapshot_image_grid(training_set, cfg, random_seed=0):
         rnd.shuffle(all_indices)
         grid_indices = [all_indices[i % len(all_indices)] for i in range(gw * gh)]
     else:
-        # Group training samples by label.
-        label_groups = dict() # label => [idx, ...]
-        for idx in range(len(training_set)):
-            label = tuple(training_set.get_details(idx).raw_label.flat[::-1])
-            if label not in label_groups:
-                label_groups[label] = []
-            label_groups[label].append(idx)
-
-        # Reorder.
-        label_order = sorted(label_groups.keys())
-        for label in label_order:
-            rnd.shuffle(label_groups[label])
-
-        # Organize into grid.
-        grid_indices = []
-        for y in range(gh):
-            label = label_order[y % len(label_order)]
-            indices = label_groups[label]
-            grid_indices += [indices[x % len(indices)] for x in range(gw)]
-            label_groups[label] = [indices[(i + gw) % len(indices)] for i in range(len(indices))]
+        raise NotImplementedError
 
     # Load data.
     batch = [training_set[i] for i in grid_indices]
     images = [b['image'] for b in batch]
     masks = [b['mask'] for b in batch]
-    labels = [b['label'] for b in batch]
     points = [b['pointcloud'] for b in batch]
     if cfg.dataset.sampling.dist == 'custom':
         camera_angles = [b['camera_angles'] for b in batch]
     else:
         camera_angles = sample_camera_angles(cfg=cfg.dataset.sampling, batch_size=len(batch), device='cpu').numpy()
-    
-    return (gw, gh), np.stack(images), np.stack(labels), np.stack(camera_angles), np.stack(masks), np.stack(points)
+    return (gw, gh), np.stack(images), np.stack(camera_angles), np.stack(masks), np.stack(points)
 
 #----------------------------------------------------------------------------
 
@@ -81,23 +60,23 @@ def save_image_grid(img, fname, drange, grid_size):
 
 #----------------------------------------------------------------------------
 
-def generate_videos(G: torch.nn.Module, z: torch.Tensor, c: torch.Tensor, p: torch.Tensor, model_name: str, return_tex: bool=False) -> torch.Tensor:
+def generate_videos(G: torch.nn.Module, z: torch.Tensor, p: torch.Tensor, model_name: str, return_tex: bool=False) -> torch.Tensor:
     num_videos = 9 if G.img_resolution >= 1024 else 16
-    z, c, p = z[:num_videos], c[:num_videos], p[:num_videos], # [num_videos, z_dim], [num_videos, c_dim]
+    z, p = z[:num_videos], p[:num_videos], # [num_videos, z_dim], [num_videos, c_dim]
     camera_cfg = dnnlib.EasyDict({'name': 'front_circle', 'num_frames': 32, 'yaw_diff': 0.5, 'pitch_diff': 0.3, 'use_zoom': True})
     vis_cfg = dnnlib.EasyDict({'max_batch_res': 64, 'batch_size': 8})
     angles, fovs = generate_camera_angles(camera_cfg, default_fov=G.cfg.dataset.sampling.fov) # [num_frames, 3], [num_frames]
     if model_name in ['canograf', 'dis3d', 'eg3d']:
         geo_z = z[...,:G.geo_dim]
         tex_z = z[...,-G.tex_dim:]
-        geo_ws = G.geo_mapping(geo_z, c) # [num_videos, num_ws, w_dim]
-        tex_ws = G.tex_mapping(tex_z, c) # [num_videos, num_ws, w_dim]
+        geo_ws = G.geo_mapping(geo_z) # [num_videos, num_ws, w_dim]
+        tex_ws = G.tex_mapping(tex_z) # [num_videos, num_ws, w_dim]
         if return_tex:
             images, textures = generate_trajectory_cano(vis_cfg, G, geo_ws, tex_ws, angles[:, :2], p=p, fovs=fovs, return_tex=True, verbose=False) # [num_frames, num_videos, c, h, w]
         else:
             images, _ = generate_trajectory_cano(vis_cfg, G, geo_ws, tex_ws, angles[:, :2], p=p, fovs=fovs, return_tex=False, verbose=False) # [num_frames, num_videos, c, h, w]
     else:
-        ws = G.mapping(z=z, c=c) # [num_videos, num_ws, w_dim]
+        ws = G.mapping(z=z) # [num_videos, num_ws, w_dim]
         images = generate_trajectory(vis_cfg, G, ws, angles[:, :2], fovs=fovs, verbose=False) # [num_frames, num_videos, c, h, w]
     images = images.permute(1, 0, 2, 3, 4) # [num_videos, num_frames, c, h, w]
     if return_tex:

@@ -126,7 +126,7 @@ class SPGANGenerator(nn.Module):
     def __init__(self, z_dim, add_dim=3, use_local=True, use_tanh=False, norm_z=False, use_attn=False):
         super(SPGANGenerator, self).__init__()
         self.np = 2048
-        self.nk = 20//2
+        self.nk = 10 # 20//2
         self.nz = z_dim
         self.z_dim = z_dim
         self.off = False
@@ -152,6 +152,9 @@ class SPGANGenerator(nn.Module):
             nn.LeakyReLU(neg, inplace=True),
         )
 
+        if self.use_attn:
+            self.attn = Attention(dim + 512)
+
         self.global_conv = nn.Sequential(
             Linear(dim, dim),
             nn.BatchNorm1d(dim),
@@ -162,7 +165,7 @@ class SPGANGenerator(nn.Module):
         )
 
         if self.use_tanh:
-            self.tail = nn.Sequential(
+            self.tail_p = nn.Sequential(
                 Conv1d(512+dim, 256, 1),
                 nn.LeakyReLU(neg, inplace=True),
                 Conv1d(256, 64, 1),
@@ -171,13 +174,12 @@ class SPGANGenerator(nn.Module):
                 nn.Tanh()
             )
         else:
-            self.tail = nn.Sequential(
+            self.tail_p = nn.Sequential(
                 Conv1d(512+dim, 256, 1),
                 nn.LeakyReLU(neg, inplace=True),
                 Conv1d(256, 64, 1),
                 nn.LeakyReLU(neg, inplace=True),
                 Conv1d(64, 3, 1),
-                # nn.Tanh()
             )
 
         if self.use_head:
@@ -204,7 +206,7 @@ class SPGANGenerator(nn.Module):
     def forward(self, z, x):
         B,N,_ = x.size()
         if self.norm_z:
-            z = z / (z.norm(p=2, dim=-1, keepdim=True)+1e-8)
+            z = z / (z.norm(p=2, dim=-1, keepdim=True)+1e-8) 
         style = torch.cat([x, z], dim=-1)
         style = style.transpose(2, 1).contiguous()
         style = self.head(style)  # B,C,N
@@ -235,10 +237,12 @@ class SPGANGenerator(nn.Module):
         if self.use_attn:
             feat_cat = self.attn(feat_cat)
 
-        x1_p = self.tail(feat_cat)                   # Bx3x256
+        x1_p = self.tail_p(feat_cat).transpose(1,2).contiguous()  # Bx3x256
+
         if self.use_tanh:
-            x1_p /= 2
-        return x1_p.transpose(1,2).contiguous()
+            x1_p = x1_p / 2
+
+        return x1_p
 
 def knn(x, k):
     batch_size = x.size(0)
@@ -380,9 +384,9 @@ class FoldSDF(nn.Module):
 
         self.template = SphereTemplate()
         self.Encoder = DGCNN(feat_dim=feat_dim)
-        self.Fold = SPGANGenerator(z_dim=feat_dim, add_dim=3, use_local=True, use_tanh=False) # local
-        self.Fold_N = SPGANGenerator(z_dim=feat_dim, add_dim=3, use_local=True, use_tanh=False) # local
-        self.dpsr = DPSR(res=(128, 128, 128), sig=0)
+        self.Fold_P = SPGANGenerator(z_dim=feat_dim, add_dim=3, use_local=True, use_tanh=True)
+        self.Fold_N = SPGANGenerator(z_dim=feat_dim, add_dim=3, use_local=True, use_tanh=False)
+        self.dpsr = DPSR(res=(128, 128, 128), sig=4)
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
@@ -445,11 +449,11 @@ class FoldSDF(nn.Module):
     def forward_gdt(self, points):
         batch_size, total_n_points = points.size(0), points.size(1)
         surface_points, surface_normals = points[..., 0:3], points[..., 3:6]
-
+        
         surface_points_dimension = (surface_points.amax(dim=-2, keepdim=True) - surface_points.amin(dim=-2, keepdim=True)).amax(dim=-1, keepdim=True)
-        surface_points = surface_points / surface_points_dimension * 0.7
+        surface_points = surface_points # / surface_points_dimension * 0.7
         dpsr_gdt = torch.tanh(self.dpsr(torch.clamp((surface_points + 0.5), 0.0, 0.99), surface_normals))
-        return dpsr_gdt
+        return dpsr_gdt.float()
 
 
     def forward(self, points, n_points=4096, batch_p_2d=None):
@@ -467,11 +471,11 @@ class FoldSDF(nn.Module):
         normals = self.Fold_N(g_latent_stacked, coords)
 
         coords_dimension = (coords.amax(dim=-2, keepdim=True) - coords.amin(dim=-2, keepdim=True)).amax(dim=-1, keepdim=True)
-        coords = coords / coords_dimension * 0.7
+        coords = coords * 0.9 # / coords_dimension * 0.7
 
         sdf_grid = torch.tanh(self.dpsr(torch.clamp((coords+0.5), 0.0, 0.99).detach(), normals))
 
-        return batch_p_2d, coords, normals, sdf_grid
+        return batch_p_2d, coords, normals, sdf_grid.float()
 
     def create_mesh(self, surface_points, N=128, max_batch=64 ** 3):
         # NOTE: the voxel_origin is actually the (bottom, left, down) corner, not the middle

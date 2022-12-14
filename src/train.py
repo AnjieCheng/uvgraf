@@ -114,7 +114,7 @@ def launch_training(c, outdir, dry_run):
 
 def init_dataset(cfg: DictConfig):
     try:
-        dataset_kwargs = dnnlib.EasyDict(class_name='src.training.dataset_get3d.ImageFolderDataset', path=cfg.dataset.path, use_labels=True, max_size=None, xflip=False)
+        dataset_kwargs = dnnlib.EasyDict(class_name='src.training.dataset_compcars.ImageFolderDataset', resolution=cfg.dataset.resolution, path=cfg.dataset.path, use_labels=True, max_size=None, xflip=False)
         dataset = dnnlib.util.construct_class_by_name(**dataset_kwargs) # Subclass of training.dataset.Dataset.
         dataset_kwargs.resolution = dataset.resolution # Be explicit about resolution.
         dataset_kwargs.use_labels = dataset.has_labels # Be explicit about labels.
@@ -124,13 +124,13 @@ def init_dataset(cfg: DictConfig):
             print('Validating camera poses in the dataset...', end='')
             camera_angles = torch.from_numpy(np.array([dataset.get_camera_angles(i) for i in range(len(dataset))]))
             mean_camera_pose = camera_angles.mean(axis=0) # [3]
-            import pdb; pdb.set_trace()
-            assert camera_angles[:, [0]].pow(2).sum().sqrt() > 0.1, "Broken yaw angles (all zeros)."
-            assert camera_angles[:, [1]].pow(2).sum().sqrt() > 0.1, "Broken pitch angles (all zeros)."
-            assert camera_angles[:, [0]].min() >= -np.pi, f"Broken yaw angles (too small): {camera_angles[:, [0]].min()}"
-            assert not torch.any(camera_angles[:, [0]] > np.pi), f"Number of broken yaw angles (too large): {torch.sum(camera_angles[:, [0]] > np.pi)}"
-            assert camera_angles[:, [1]].min() >= 0.0, f"Broken pitch angles (too small): {camera_angles[:, [1]].min()}"
-            assert not torch.any(camera_angles[:, [1]] > np.pi), f"Number of broken pitch angles (too large): {torch.sum(camera_angles[:, [1]] > np.pi)}"
+            # import pdb; pdb.set_trace()
+            # assert camera_angles[:, [0]].pow(2).sum().sqrt() > 0.1, "Broken yaw angles (all zeros)."
+            # assert camera_angles[:, [1]].pow(2).sum().sqrt() > 0.1, "Broken pitch angles (all zeros)."
+            # assert camera_angles[:, [0]].min() >= -np.pi, f"Broken yaw angles (too small): {camera_angles[:, [0]].min()}"
+            # assert not torch.any(camera_angles[:, [0]] > np.pi), f"Number of broken yaw angles (too large): {torch.sum(camera_angles[:, [0]] > np.pi)}"
+            # assert camera_angles[:, [1]].min() >= 0.0, f"Broken pitch angles (too small): {camera_angles[:, [1]].min()}"
+            # assert not torch.any(camera_angles[:, [1]] > np.pi), f"Number of broken pitch angles (too large): {torch.sum(camera_angles[:, [1]] > np.pi)}"
             print('done!')
         else:
             mean_camera_pose = torch.tensor([cfg.dataset.sampling.horizontal_mean, cfg.dataset.sampling.vertical_mean, 0.0]) # [3]
@@ -244,7 +244,7 @@ def main(cfg: DictConfig):
             far=cfg.dataset.sampling.ray_end,
             radius=cfg.dataset.sampling.radius,
             scale=cfg.dataset.get('cube_scale', 1.0),
-            verbose=False,
+            verbose=True,
         ), f"Please, increase the scale: {cfg.model.generator.tri_plane.scale}"
         print('Done!')
     elif cfg.model.name in ['stylegan3-t', 'stylegan3-r']:

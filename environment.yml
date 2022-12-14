@@ -1,11 +1,11 @@
-name: rnf
+name: uvgraf
 channels:
   - pytorch
   - nvidia
 dependencies:
   - python >= 3.8
   - pip
-  - numpy>=1.20
+  - numpy>=1.16.5,<1.23.0
   - click>=8.0
   - pillow=8.3.1
   - scipy=1.7.1
@@ -23,11 +23,16 @@ dependencies:
     - pyopengl==3.1.5
     - imageio-ffmpeg==0.4.3
     - pyspng
+    - git+https://github.com/facebookresearch/pytorch3d.git
+    - git+https://github.com/nihalsid/trimesh@master
+    - scikit-image
     - tensorboard==2.4.1
     - tqdm
+    - moviepy
+    - opencv-python
     - gitpython
     - gpustat
-    - hydra-core==1.0.7
+    - hydra-core
     - av==8.1.0
     - torch_tb_profiler==0.3.1
     - joblib==1.1.0

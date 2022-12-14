@@ -80,7 +80,7 @@ class StyleGAN2Loss(Loss):
         img = self.G.synthesis(ws, camera_angles, update_emas=update_emas, **patch_kwargs)
         return img, ws, patch_params
 
-    def run_D(self, in_img, c, blur_sigma=0, update_emas=False, **kwargs):
+    def run_D(self, in_img, blur_sigma=0, update_emas=False, **kwargs):
         img = in_img[:,:3,...]
         mask = in_img[:,3:4,...]
         blur_size = np.floor(blur_sigma * 3)
@@ -90,7 +90,7 @@ class StyleGAN2Loss(Loss):
                 img = upfirdn2d.filter2d(img, f / f.sum())
         if self.augment_pipe is not None:
             img = self.augment_pipe(img, num_frames=img.shape[1] // self.G.img_channels) # [batch_size, c * 2, h, w]
-        logits, logits_mask = self.D(torch.cat([img,mask], dim=1), c, update_emas=update_emas, **kwargs)
+        logits, logits_mask = self.D(torch.cat([img,mask], dim=1), update_emas=update_emas, **kwargs)
         return logits, logits_mask
 
     def extract_patches(self, img: torch.Tensor):
@@ -182,19 +182,19 @@ class StyleGAN2Loss(Loss):
 #----------------------------------------------------------------------------
 
 class CanonicalStyleGAN2Loss(StyleGAN2Loss):
-    def run_G(self, z, c, camera_angles, points, camera_angles_cond=None, update_emas=False, verbose=False):
+    def run_G(self, z, camera_angles, points, camera_angles_cond=None, update_emas=False, verbose=False):
         geo_z = z[...,:self.G.geo_dim]
         tex_z = z[...,-self.G.tex_dim:]
-        geo_ws = self.G.geo_mapping(geo_z, c, camera_angles=camera_angles_cond, update_emas=update_emas)
-        tex_ws = self.G.tex_mapping(tex_z, c, camera_angles=camera_angles_cond, update_emas=update_emas)
+        geo_ws = self.G.geo_mapping(geo_z, camera_angles=camera_angles_cond, update_emas=update_emas)
+        tex_ws = self.G.tex_mapping(tex_z, camera_angles=camera_angles_cond, update_emas=update_emas)
         if self.style_mixing_prob > 0:
             with torch.autograd.profiler.record_function('style_mixing'):
                 geo_cutoff = torch.empty([], dtype=torch.int64, device=geo_ws.device).random_(1, geo_ws.shape[1])
                 geo_cutoff = torch.where(torch.rand([], device=geo_ws.device) < self.style_mixing_prob, geo_cutoff, torch.full_like(geo_cutoff, geo_ws.shape[1]))
-                geo_ws[:, geo_cutoff:] = self.G.geo_mapping(z=torch.randn_like(geo_z), c=c, camera_angles=camera_angles_cond, update_emas=False)[:, geo_cutoff:]
+                geo_ws[:, geo_cutoff:] = self.G.geo_mapping(z=torch.randn_like(geo_z), camera_angles=camera_angles_cond, update_emas=False)[:, geo_cutoff:]
                 tex_cutoff = torch.empty([], dtype=torch.int64, device=geo_ws.device).random_(1, tex_ws.shape[1])
                 tex_cutoff = torch.where(torch.rand([], device=geo_ws.device) < self.style_mixing_prob, tex_cutoff, torch.full_like(tex_cutoff, tex_ws.shape[1]))
-                tex_ws[:, tex_cutoff:] = self.G.tex_mapping(z=torch.randn_like(tex_z), c=c, camera_angles=camera_angles_cond, update_emas=False)[:, tex_cutoff:]
+                tex_ws[:, tex_cutoff:] = self.G.tex_mapping(z=torch.randn_like(tex_z), camera_angles=camera_angles_cond, update_emas=False)[:, tex_cutoff:]
         
         patch_params = sample_patch_params(len(z), self.patch_cfg, device=z.device) if self.patch_cfg['enabled'] else {}
         patch_kwargs = dict(patch_params=patch_params) if self.patch_cfg['enabled'] else None
@@ -206,7 +206,7 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
             img = self.G.synthesis(geo_ws, tex_ws, camera_angles, points=points, update_emas=update_emas, verbose=False, **patch_kwargs)
             return img, [geo_ws, tex_ws], patch_params
 
-    def accumulate_gradients(self, phase, real_img, real_c, real_camera_angles, gen_z, gen_c, gen_camera_angles, gen_camera_angles_cond, gain, cur_nimg, points):
+    def accumulate_gradients(self, phase, real_img, real_camera_angles, gen_z, gen_camera_angles, gen_camera_angles_cond, gain, cur_nimg, points):
         with torch.autograd.set_detect_anomaly(True):
             assert phase in ['Gmain', 'Greg_pl', 'Gall', 'Dmain', 'Dreg', 'Dall']
             if self.r1_gamma == 0:
@@ -216,8 +216,8 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
             # Gmain: Maximize logits for generated images.
             if phase in ['Gmain', 'Greg_mvc', 'Gall']:
                 with torch.autograd.profiler.record_function('Gmain_forward'):
-                    gen_img, _gen_ws, patch_params, info = self.run_G(gen_z, gen_c, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, verbose=True, points=points)
-                    gen_logits = self.run_D(gen_img, gen_c, blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=gen_camera_angles)
+                    gen_img, _gen_ws, patch_params, info = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, verbose=True, points=points)
+                    gen_logits = self.run_D(gen_img, blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=gen_camera_angles)
                     gen_logits, gen_logits_mask = gen_logits
                     
                     training_stats.report('Loss/scores/fake', gen_logits)
@@ -257,8 +257,8 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
         if phase in ['Dmain', 'Dall']:
             with torch.autograd.profiler.record_function('Dgen_forward'):
                 with torch.no_grad():
-                    gen_img, _gen_ws, patch_params = self.run_G(gen_z, gen_c, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, update_emas=True, points=points)
-                gen_logits = self.run_D(gen_img, gen_c, blur_sigma=blur_sigma, update_emas=True, patch_params=patch_params, camera_angles=gen_camera_angles)
+                    gen_img, _gen_ws, patch_params = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, update_emas=True, points=points)
+                gen_logits = self.run_D(gen_img, blur_sigma=blur_sigma, update_emas=True, patch_params=patch_params, camera_angles=gen_camera_angles)
                 gen_logits, gen_logits_mask = gen_logits
                 
                 training_stats.report('Loss/scores/fake', gen_logits)
@@ -286,7 +286,7 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                 with torch.autograd.profiler.record_function(name + '_forward'):
                     (real_img, patch_params) = self.extract_patches(real_img) if self.patch_cfg['enabled'] else (real_img, None)
                     real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dall'])
-                    real_logits = self.run_D(real_img_tmp, real_c, blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=real_camera_angles)
+                    real_logits = self.run_D(real_img_tmp, blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=real_camera_angles)
                     real_logits, real_logits_mask = real_logits
                     
                     training_stats.report('Loss/scores/real', real_logits)
