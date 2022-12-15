@@ -414,7 +414,7 @@ class FoldSDF(nn.Module):
         batch_size, n_points = sampled_points.size(0), sampled_points.size(1)
 
         g_latent, l_latent = self.Encoder(surface_points)
-        g_latent_stacked = g_latent.view(batch_size, self.Fold.z_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
+        g_latent_stacked = g_latent.view(batch_size, self.feat_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
 
         cano_coords = self.Fold(g_latent_stacked, sampled_points)
         pred_sdf = self.template(cano_coords)
@@ -441,7 +441,7 @@ class FoldSDF(nn.Module):
         batch_p_2d = batch_p_2d.to(surface_points.device)
         
         g_latent, l_latent = self.Encoder(surface_points)
-        g_latent_stacked = g_latent.view(batch_size, self.Fold.z_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
+        g_latent_stacked = g_latent.view(batch_size, self.feat_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
         coords = self.Fold(g_latent_stacked, batch_p_2d)
         normals = self.Fold_N(g_latent_stacked, coords)
         return coords, normals
@@ -449,7 +449,7 @@ class FoldSDF(nn.Module):
     def forward_gdt(self, points):
         batch_size, total_n_points = points.size(0), points.size(1)
         surface_points, surface_normals = points[..., 0:3], points[..., 3:6]
-        
+
         surface_points_dimension = (surface_points.amax(dim=-2, keepdim=True) - surface_points.amin(dim=-2, keepdim=True)).amax(dim=-1, keepdim=True)
         surface_points = surface_points # / surface_points_dimension * 0.7
         dpsr_gdt = torch.tanh(self.dpsr(torch.clamp((surface_points + 0.5), 0.0, 0.99), surface_normals))
@@ -466,8 +466,8 @@ class FoldSDF(nn.Module):
         
         indice = torch.tensor(random.sample(range(total_n_points), n_points)).to(surface_points.device)
         g_latent, l_latent = self.Encoder(surface_points[:,indice,:])
-        g_latent_stacked = g_latent.view(batch_size, self.Fold.z_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
-        coords = self.Fold(g_latent_stacked, batch_p_2d)
+        g_latent_stacked = g_latent.view(batch_size, self.feat_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
+        coords = self.Fold_P(g_latent_stacked, batch_p_2d)
         normals = self.Fold_N(g_latent_stacked, coords)
 
         coords_dimension = (coords.amax(dim=-2, keepdim=True) - coords.amin(dim=-2, keepdim=True)).amax(dim=-1, keepdim=True)
@@ -646,7 +646,7 @@ class FoldSDF(nn.Module):
         batch_p_2d = self.template.get_random_points(num_points=n_points, batch_size=batch_size)
         batch_p_2d = batch_p_2d.to(surface_points.device)
         
-        g_latent_stacked = g_latent.view(batch_size, self.Fold.z_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
+        g_latent_stacked = g_latent.view(batch_size, self.feat_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
         folding_points = self.Fold(g_latent_stacked, batch_p_2d)
         folding_normals = self.Fold_N(g_latent_stacked, folding_points)
         psr_grid = self.dpsr(torch.clamp((folding_points+0.5), 0.0, 0.99), folding_normals)

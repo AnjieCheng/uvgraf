@@ -6,7 +6,7 @@ gamma: 0.1 # R1 regularization weight (auto)
 
 # Optional features.
 use_labels: false # Train conditional model
-mirror: true # Enable dataset x-flips
+mirror: false # Enable dataset x-flips
 resume: latest # Resume from given network pickle
 freezed: 0 # Freeze first layers of D
 

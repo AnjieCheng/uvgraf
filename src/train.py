@@ -74,7 +74,7 @@ def launch_training(c, outdir, dry_run):
     print(f'Batch size:              {c.batch_size} images')
     print(f'Training duration:       {c.total_kimg} kimg')
     print(f'Dataset path:            {c.training_set_kwargs.path}')
-    print(f'Dataset size:            {c.training_set_kwargs.max_size} images')
+    print(f'Dataset size:            {c.training_set_kwargs.max_size} shapes')
     print(f'Dataset resolution:      {c.training_set_kwargs.resolution}')
     print(f'Dataset labels:          {c.training_set_kwargs.use_labels}')
     print(f'Dataset x-flips:         {c.training_set_kwargs.xflip}')
@@ -114,7 +114,7 @@ def launch_training(c, outdir, dry_run):
 
 def init_dataset(cfg: DictConfig):
     try:
-        dataset_kwargs = dnnlib.EasyDict(class_name='src.training.dataset_compcars.ImageFolderDataset', resolution=cfg.dataset.resolution, path=cfg.dataset.path, use_labels=True, max_size=None, xflip=False)
+        dataset_kwargs = dnnlib.EasyDict(class_name='src.training.dataset_compcars.ImageFolderDataset', path=cfg.dataset.path, resolution=cfg.dataset.resolution, use_labels=True, max_size=None, xflip=False)
         dataset = dnnlib.util.construct_class_by_name(**dataset_kwargs) # Subclass of training.dataset.Dataset.
         dataset_kwargs.resolution = dataset.resolution # Be explicit about resolution.
         dataset_kwargs.use_labels = dataset.has_labels # Be explicit about labels.

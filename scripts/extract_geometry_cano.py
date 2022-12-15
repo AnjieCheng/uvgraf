@@ -18,7 +18,7 @@ import plotly.graph_objects as go
 # import plotly.express as px
 
 from src.training.training_utils import run_batchwise
-from src.training.networks_canograf import canonical_renderer_pretrain
+from src.training.networks_canograf_dep import canonical_renderer_pretrain
 from scripts.utils import load_generator, set_seed, create_voxel_coords
 
 #----------------------------------------------------------------------------

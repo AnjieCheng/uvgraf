@@ -34,6 +34,7 @@ except ImportError:
 class ImageFolderDataset(torch.utils.data.Dataset):
     def __init__(
             self,
+            path,
             resolution=64,  # Ensure specific resolution, None = highest available.
             split='train',
             limit_dataset_size=None,
@@ -43,9 +44,10 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         self._name = "CompCars"
         self.has_labels = False
         self.label_shape = None
-        self.image_path = Path("/home/anjie/Downloads/CADTextures/CompCars/exemplars_highres")
-        self.mask_path = Path("/home/anjie/Downloads/CADTextures/CompCars/exemplars_highres_mask")
-        self.mesh_path = Path("/home/anjie/Downloads/CADTextures/CompCars/manifold_combined")
+        
+        self.image_path = Path(os.path.join(path, 'exemplars_highres'))
+        self.mask_path = Path(os.path.join(path, 'exemplars_highres_mask'))
+        self.mesh_path = Path(os.path.join(path, 'manifold_combined'))
 
         self.erode = True
 
@@ -57,15 +59,10 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         self.keys_list = list(self.real_images_dict.keys())
         self.num_images = len(self.keys_list)
 
-        # self.sparse_points_list = [y for x in os.walk(self.mesh_path) for y in glob(os.path.join(x[0], '4096_pointcloud.npz'))]
-        # self.dense_points_list = [y for x in os.walk(self.mesh_path) for y in glob(os.path.join(x[0], '50000_pointcloud.npz'))]
-        # assert len(self.sparse_points_list) == len(self.dense_points_list)
-
-        dpsr_car_path = "/home/anjie/Downloads/shapenet_psr/02958343"
+        dpsr_car_path = os.path.join(path, 'shapenet_psr', '02958343')
         obj_names = os.listdir(self.mesh_path)
         self.point_cloud_paths = [os.path.join(dpsr_car_path, obj_name,'pointcloud.npz') for obj_name in obj_names]
         self.num_shapes = len(self.point_cloud_paths)
-
 
         """
         print("valid img checking...")
@@ -188,7 +185,6 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         angles = np.array([azimuth, elevation, 0]).astype(np.float)
         return angles
 
-
     def _get_raw_camera_angles(self):
         if self._raw_camera_angles is None:
             self._raw_camera_angles = self._load_raw_camera_angles()
@@ -238,28 +234,6 @@ class ImageFolderDataset(torch.utils.data.Dataset):
     @staticmethod
     def _file_ext(fname):
         return os.path.splitext(fname)[1].lower()
-
-
-# def get_car_views():
-#     # front, back, right, left, front_right, front_left, back_right, back_left
-#     azimuth = [3 * math.pi / 2, math.pi / 2,
-#                0, math.pi,
-#                math.pi + math.pi / 3, 0 - math.pi / 3,
-#                math.pi / 2 + math.pi / 6, math.pi / 2 - math.pi / 6]
-#     azimuth_noise = [0, 0,
-#                      0, 0,
-#                      (random.random() - 0.5) * math.pi / 8, (random.random() - 0.5) * math.pi / 8,
-#                      (random.random() - 0.5) * math.pi / 8, (random.random() - 0.5) * math.pi / 8,]
-#     elevation = [math.pi / 2, math.pi / 2,
-#                  math.pi / 2, math.pi / 2,
-#                  math.pi / 2 - math.pi / 48, math.pi / 2 - math.pi / 48,
-#                  math.pi / 2 - math.pi / 48, math.pi / 2 - math.pi / 48]
-#     elevation_noise = [-random.random() * math.pi / 70, -random.random() * math.pi / 70,
-#                        0, 0,
-#                        -random.random() * math.pi / 32, -random.random() * math.pi / 32,
-#                        0, 0]
-#     return [{'azimuth': a + an + 3 * math.pi / 2, 'elevation': e + en, 'fov': 40} for a, an, e, en in zip(azimuth, azimuth_noise, elevation, elevation_noise)]
-
 
 def get_car_views():
     # front, back, right, left, front_right, front_left, back_right, back_left

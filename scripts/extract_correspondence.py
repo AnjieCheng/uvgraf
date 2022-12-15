@@ -20,7 +20,7 @@ import json
 
 
 from src.training.training_utils import run_batchwise, sample_sphere_points, get_feat_from_triplane
-from src.training.networks_canograf import canonical_renderer_pretrain
+from src.training.networks_canograf_dep import canonical_renderer_pretrain
 from scripts.utils import load_generator, set_seed, create_voxel_coords
 
 external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']

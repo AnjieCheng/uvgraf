@@ -1,4 +1,5 @@
 name: compcars_${dataset.resolution}
+path: /home/anjie/Downloads/CADTextures/CompCars
 sampling:
   fov: 35 # 35
   ray_start: 1.15
