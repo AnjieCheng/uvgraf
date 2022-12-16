@@ -456,7 +456,7 @@ class FoldSDF(nn.Module):
         return dpsr_gdt.float()
 
 
-    def forward(self, points, n_points=4096, batch_p_2d=None):
+    def forward(self, points, n_points=2048, multiplication=4, batch_p_2d=None):
         batch_size, total_n_points = points.size(0), points.size(1)
         surface_points, surface_normals = points[..., 0:3], points[..., 3:6]
 

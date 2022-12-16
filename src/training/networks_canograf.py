@@ -14,6 +14,7 @@ from pytorch3d.ops import knn_points
 from src.training.networks_geometry import FoldSDF
 from src.training.networks_stylegan2 import SynthesisBlock
 from src.training.networks_stylegan3 import SynthesisNetwork as SG3SynthesisNetwork
+from src.training.networks_cips import CIPSres
 from src.training.networks_inr_gan import SynthesisNetwork as INRSynthesisNetwork
 from src.training.layers import (
     FullyConnectedLayer,
@@ -31,20 +32,21 @@ from src.training.training_utils import *
 
 
 @misc.profiled_function
-def canonical_renderer_pretrain(tex_x: torch.Tensor, geo_x: torch.Tensor, geo_ws: torch.Tensor,
-                                coords: torch.Tensor, ray_d_world: torch.Tensor,  sdf_grid: torch.Tensor,
-                                folding_grid: torch.Tensor, folding_coords: torch.Tensor, folding_normals: torch.Tensor,
-                                mlp_f: Callable, mlp_b: Callable, template: Callable, sanity_mlp: Callable,
-                                texture_mlp: Callable, geo_mlp: Callable=None, scale: float=1.0, 
-                                rt_sdf: bool=False, rt_radiance: bool=True) -> torch.Tensor:
+def canonical_renderer_pretrain(tex_x: torch.Tensor, coords: torch.Tensor, ray_d_world: torch.Tensor, 
+                                sdf_grid: torch.Tensor, folding_grid: torch.Tensor, folding_coords: torch.Tensor, folding_normals: torch.Tensor,
+                                texture_mlp: Callable, scale: float=1.0,  rt_sdf: bool=False, rt_radiance: bool=True) -> torch.Tensor:
     # geo
-    batch_size, raw_feat_dim, h, w = geo_x.shape
+    batch_size, raw_feat_dim, h, w = tex_x.shape
     num_points = coords.shape[1]
 
     coords_normed = coords / 0.5
     sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
-    sigmas = torch.sigmoid(-sdfs / 0.005) / 0.005
-    
+    # sigmas = torch.sigmoid(-sdfs / 0.005) / 0.005
+
+    beta = 0.005
+    alpha = 1 / beta
+    sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
+
     K = 16
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)
     dis = dis.detach()
@@ -72,132 +74,7 @@ def canonical_renderer_pretrain(tex_x: torch.Tensor, geo_x: torch.Tensor, geo_ws
 
     return torch.cat([rgbs, sigmas.detach()], dim=-1)
 
-@misc.profiled_function
-def canonical_renderer(tex_x: torch.Tensor, geo_x: torch.Tensor, 
-                       coords: torch.Tensor, ray_d_world: torch.Tensor, 
-                       mlp_f: Callable, mlp_b: Callable, template: Callable, 
-                       texture_mlp: Callable, geo_mlp: Callable=None, scale: float=1.0, rt_sdf: bool=False) -> torch.Tensor:
-    # geo
-    # with torch.no_grad():
-    assert geo_x.shape[1] % 3 == 0, f"We use 3 planes: {geo_x.shape}"
-    batch_size, raw_feat_dim, h, w = geo_x.shape
-    misc.assert_shape(coords, [batch_size, None, 3])
-
-    geo_feat = get_feat_from_triplane(coords, geo_x, scale=scale)
-        
-    # if geo_x.requires_grad:
-    with torch.set_grad_enabled(True):
-        coords_org = coords.clone().detach().requires_grad_(True)
-        coords = coords_org
-        coords_f = F.tanh(mlp_f(geo_feat, coords, ray_d_world)) # [batch_size, num_points, out_dim]
-        sigmas, sdfs = template(coords_f, get_sdf=True)
-    sdf_grad = gradient(sdfs, coords)
-
-    geo_feat_f = get_feat_from_triplane(coords_f, geo_x, scale=None)
-    coords_b = F.tanh(mlp_b(geo_feat_f, coords_f, ray_d_world)) * scale # F.tanh() * scale
-
-    # uv rgbs (starts)
-    sphere_samples = sample_sphere_points(radius=0.3, num_points=256)
-    batched_sphere_samples = sphere_samples.unsqueeze(0).expand(batch_size, -1, -1).to(coords.device)
-    sphere_tex_feat = get_feat_from_triplane(batched_sphere_samples, tex_x, scale=0.5)
-    fused_feat = get_nn_fused_feats(coords_f, batched_sphere_samples, sphere_tex_feat, K=4)
-    
-    rgbs = texture_mlp(fused_feat, sdf_grad.detach(), sdfs.detach()) # [batch_size, num_points, out_dim]
-
-    if geo_x.requires_grad:
-        return torch.cat([rgbs, sigmas, coords_f, coords_b, sdf_grad], dim=-1) # , uv.squeeze(1)
-    else:
-        if rt_sdf:
-            return torch.cat([rgbs, sdfs, coords_f, coords_b, coords_b], dim=-1) # , uv.squeeze(1)
-        else:
-            return torch.cat([rgbs, sigmas, coords_f, coords_b, coords_b], dim=-1) # , uv.squeeze(1)
-
 #----------------------------------------------------------------------------
-
-@persistence.persistent_class
-class SanityMLP(nn.Module):
-    def __init__(self, out_dim: int=3):
-        super().__init__()
-        hid_dim = 64
-        n_layers = 2
-        self.out_dim = out_dim
-        backbone_input_dim = 3
-        backbone_out_dim = self.out_dim
-        self.dims = [backbone_input_dim] + [hid_dim] * (n_layers - 1) + [backbone_out_dim] # (n_hid_layers + 2)
-        activations = ['lrelu'] * (len(self.dims) - 2) + ['linear']
-        assert len(self.dims) > 2, f"We cant have just a linear layer here: nothing to modulate. Dims: {self.dims}"
-        layers = [FullyConnectedLayer(self.dims[i], self.dims[i+1], activation=a) for i, a in enumerate(activations)]
-        self.model = nn.Sequential(*layers)
-
-        self.ray_dir_enc = None
-        self.color_network = None
-
-    def forward(self, xyz: torch.Tensor) -> torch.Tensor:
-        B, N, _ = xyz.shape
-        xyz = xyz.reshape(-1, 3)
-        out = self.model(xyz)
-        return out.reshape(B, N, 1)
-
-@persistence.persistent_class
-class TriPlaneMLP(nn.Module):
-    def __init__(self, cfg: DictConfig, out_dim: int):
-        super().__init__()
-        self.cfg = cfg
-        self.out_dim = out_dim
-
-        has_view_cond = self.cfg.tri_plane.view_hid_dim > 0
-
-        if self.cfg.tri_plane.mlp.n_layers == 0:
-            assert self.cfg.tri_plane.feat_dim == (self.out_dim + 1), f"Wrong dims: {self.cfg.tri_plane.feat_dim}, {self.out_dim}"
-            self.model = nn.Identity()
-        else:
-            if self.cfg.tri_plane.get('posenc_period_len', 0) > 0:
-                self.pos_enc = ScalarEncoder1d(3, x_multiplier=self.cfg.tri_plane.posenc_period_len, const_emb_dim=0)
-            else:
-                self.pos_enc = None
-
-            backbone_input_dim = self.cfg.tri_plane.feat_dim # 256+self.cfg.tri_plane.feat_dim+3 # self.cfg.tri_plane.feat_dim + 3 + (0 if self.pos_enc is None else self.pos_enc.get_dim())
-            backbone_out_dim = (self.cfg.tri_plane.mlp.hid_dim if has_view_cond else self.out_dim)
-            self.dims = [backbone_input_dim] + [self.cfg.tri_plane.mlp.hid_dim] * (self.cfg.tri_plane.mlp.n_layers - 1) + [backbone_out_dim] # (n_hid_layers + 2)
-            activations = ['lrelu'] * (len(self.dims) - 2) + ['linear']
-            assert len(self.dims) > 2, f"We cant have just a linear layer here: nothing to modulate. Dims: {self.dims}"
-            layers = [FullyConnectedLayer(self.dims[i], self.dims[i+1], activation=a) for i, a in enumerate(activations)]
-            self.model = nn.Sequential(*layers)
-            self.model_second = nn.Sequential(*layers)
-            self.ray_dir_enc = None
-            self.color_network = None
-
-    def forward(self, x: torch.Tensor, coords: torch.Tensor, ray_d_world: torch.Tensor, global_x: torch.Tensor) -> torch.Tensor:
-        """
-        Params:
-            x: [batch_size, 3, num_points, feat_dim] --- volumetric features from tri-planes
-            coords: [batch_size, num_points, 3] --- coordinates, assumed to be in [-1, 1]
-            ray_d_world: [batch_size, h * w, 3] --- camera ray's view directions
-        """
-        batch_size, _, num_points, feat_dim = x.shape
-        batch_size, _, global_feat_dim = global_x.shape
-        x = x.mean(dim=1).reshape(batch_size * num_points, feat_dim) # [batch_size * num_points, feat_dim]
-        y_2 = self.model(x)
-        y_2 = y_2.view(batch_size, num_points, self.dims[-1]) # [batch_size, num_points, backbone_out_dim]
-        """
-        if global_x is not None:
-            global_x = global_x.expand(-1,num_points,-1)
-            x = x.mean(dim=1).reshape(batch_size * num_points, feat_dim) # [batch_size * num_points, feat_dim]
-            model_input = torch.cat([coords.reshape(batch_size * num_points, 3), x, global_x.reshape(batch_size * num_points, global_feat_dim)], dim=1)
-        else:
-            x = x.mean(dim=1).reshape(batch_size * num_points, feat_dim) # [batch_size * num_points, feat_dim]
-            model_input = torch.cat([x, coords.reshape(batch_size * num_points, 3)], dim=1)
-        y_1 = self.model(model_input) # [batch_size * num_points, out_dim]
-        if global_x is not None:
-            model_second_input = torch.cat([y_1.reshape(batch_size * num_points, 3), x, global_x.reshape(batch_size * num_points, global_feat_dim)], dim=1)
-        else:
-            model_second_input = torch.cat([x, coords.reshape(batch_size * num_points, 3)], dim=1)
-        y_2 = self.model_second(model_second_input)
-        y_2 = y_2.view(batch_size, num_points, self.dims[-1]) # [batch_size, num_points, backbone_out_dim]
-        """
-        misc.assert_shape(y_2, [batch_size, num_points, self.out_dim])
-
-        return y_2
 
 @persistence.persistent_class
 class TextureMLP(nn.Module):
@@ -403,41 +280,6 @@ class SynthesisNetwork(torch.nn.Module):
                                 ckpt_path="/home/anjie/Projects/FoldSDF/logs/2022-12-11T01-10-43_dev_texturify_car/checkpoints/last.ckpt",
                                 ignore_keys=['dpsr'])
 
-        # sigma
-        sigma_decoder_out_channels = self.cfg.tri_plane.feat_dim * 3 + (self.img_channels if self.cfg.bg_model.type == "plane" else 0)
-
-        self.tri_plane_decoder = SynthesisBlocksSequence(
-            w_dim=w_dim,
-            in_resolution=0,
-            out_resolution=self.cfg.tri_plane.res,
-            in_channels=0,
-            out_channels=sigma_decoder_out_channels,
-            architecture='skip',
-            num_fp16_res=(0 if self.cfg.tri_plane.fp32 else num_fp16_res),
-            use_noise=self.cfg.use_noise,
-            **synthesis_seq_kwargs,
-        )
-
-        self.tri_plane_mlp_f = TriPlaneMLP(self.cfg, out_dim=3)
-        self.tri_plane_mlp_b = TriPlaneMLP(self.cfg, out_dim=3)
-        self.template = SphereTemplate(is_hollow=True)
-        self.sanity_mlp = SanityMLP(out_dim=1)
-
-        self.texture_mlp = TextureMLP(self.cfg, out_dim=3)
-
-        self.num_ws = self.tri_plane_decoder.num_ws
-        self.nerf_noise_std = 0.0
-        self.train_resolution = self.cfg.patch.resolution if self.cfg.patch.enabled else self.img_resolution
-        self.test_resolution = self.img_resolution
-
-        if self.cfg.bg_model.type in (None, "plane"):
-            self.bg_model = None
-        elif self.cfg.bg_model.type == "sphere":
-            self.bg_model = INRSynthesisNetwork(self.cfg.bg_model, w_dim)
-            self.num_ws += self.bg_model.num_ws
-        else:
-            raise NotImplementedError(f"Uknown BG model type: {self.bg_model}")
-
         # rgb
         texture_decoder_out_channels = 32
         self.texture_decoder = SynthesisBlocksSequence(
@@ -451,6 +293,21 @@ class SynthesisNetwork(torch.nn.Module):
             use_noise=self.cfg.use_noise,
             **synthesis_seq_kwargs,
         )
+
+        self.texture_mlp = TextureMLP(self.cfg, out_dim=3)
+
+        self.num_ws = self.texture_decoder.num_ws
+        self.nerf_noise_std = 0.0
+        self.train_resolution = self.cfg.patch.resolution if self.cfg.patch.enabled else self.img_resolution
+        self.test_resolution = self.img_resolution
+
+        if self.cfg.bg_model.type in (None, "plane"):
+            self.bg_model = None
+        elif self.cfg.bg_model.type == "sphere":
+            self.bg_model = INRSynthesisNetwork(self.cfg.bg_model, w_dim)
+            self.num_ws += self.bg_model.num_ws
+        else:
+            raise NotImplementedError(f"Uknown BG model type: {self.bg_model}")
 
     def progressive_update(self, cur_kimg: float):
         self.nerf_noise_std = linear_schedule(cur_kimg, self.cfg.nerf_noise_std_init, 0.0, self.cfg.nerf_noise_kimg_growth)
@@ -477,13 +334,9 @@ class SynthesisNetwork(torch.nn.Module):
             fov = camera_angles[:,4]
             camera_angles = camera_angles[:,:3]
 
-        geo_global_feat = geo_ws[:, self.tri_plane_decoder.num_ws:self.tri_plane_decoder.num_ws+1]
-
         if self.cfg.backbone == 'raw_planes':
-            geo_feats = self.tri_plane_decoder.repeat(len(geo_ws), 1, 1, 1) + geo_ws.sum() * 0.0 # [batch_size, 3, 256, 256]
             tex_feats = self.texture_decoder.repeat(len(tex_ws), 1, 1, 1) + tex_ws.sum() * 0.0 # [batch_size, 3, 256, 256]
         else:
-            geo_feats = self.tri_plane_decoder(geo_ws[:, :self.tri_plane_decoder.num_ws], **block_kwargs) # [batch_size, 3 * feat_dim, tp_h, tp_w]
             tex_feats = self.texture_decoder(tex_ws[:, :self.texture_decoder.num_ws], **block_kwargs) # [batch_size, feat_dim, tp_h, tp_w]
 
         batch_size = geo_ws.shape[0]
@@ -512,19 +365,13 @@ class SynthesisNetwork(torch.nn.Module):
         coarse_output = run_batchwise(
             fn=canonical_renderer_pretrain, data=dict(coords=points_world),
             batch_size=max_batch_res ** 2 * num_steps, dim=1, 
-            mlp_f=self.tri_plane_mlp_f, mlp_b=self.tri_plane_mlp_b, template=self.template, texture_mlp=self.texture_mlp,
-            geo_x=geo_feats, tex_x=tex_feats, scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
-            geo_ws=geo_global_feat,
-            folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals,
-            sanity_mlp=self.sanity_mlp,
-            sdf_grid=sdf_grid,
+            texture_mlp=self.texture_mlp, tex_x=tex_feats, 
+            scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
+            folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals, sdf_grid=sdf_grid,
         ) # [batch_size, h * w * num_steps, num_feats]
         coarse_output = coarse_output.view(batch_size, h * w, num_steps, rgb_sigma_out_dim) # [batch_size, h * w, num_steps, num_feats] | rgbs, sigmas, f_pts, b_pts
-        
         coarse_rgb_sigma = coarse_output[...,:rgb_sigma_out_dim]
-        # coarse_f_pts = coarse_output[..., rgb_sigma_out_dim:rgb_sigma_out_dim+3]
-        # coarse_b_pts = coarse_output[..., rgb_sigma_out_dim+3:rgb_sigma_out_dim+6]
-        # coarse_sdf = coarse_output[..., rgb_sigma_out_dim+6:rgb_sigma_out_dim+9]
+
 
         # <==================================================>
         # HIERARCHICAL SAMPLING START
@@ -552,29 +399,21 @@ class SynthesisNetwork(torch.nn.Module):
         fine_output = run_batchwise(
             fn=canonical_renderer_pretrain, data=dict(coords=fine_points),
             batch_size=max_batch_res ** 2 * num_steps, dim=1, 
-            mlp_f=self.tri_plane_mlp_f, mlp_b=self.tri_plane_mlp_b, template=self.template, texture_mlp=self.texture_mlp,
-            geo_x=geo_feats, tex_x=tex_feats, scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
-            geo_ws=geo_global_feat,
-            folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals,
-            sanity_mlp=self.sanity_mlp,
-            sdf_grid=sdf_grid,
+            texture_mlp=self.texture_mlp, tex_x=tex_feats, 
+            scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
+            folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals, sdf_grid=sdf_grid,
         ) # [batch_size, h * w * num_steps, num_feats]
         fine_output = fine_output.view(batch_size, h * w, num_steps, rgb_sigma_out_dim) # [batch_size, h * w, num_steps, num_feats]
 
         fine_rgb_sigma = fine_output[...,:rgb_sigma_out_dim]
-        # fine_f_pts = fine_output[..., rgb_sigma_out_dim:rgb_sigma_out_dim+3]
-        # fine_b_pts = fine_output[..., rgb_sigma_out_dim+3:rgb_sigma_out_dim+6]
-        # fine_sdf = fine_output[..., rgb_sigma_out_dim+6:rgb_sigma_out_dim+9]
         fine_points = fine_points.reshape(batch_size, h * w, num_steps, 3) # [batch_size, h * w, num_steps, 3]
 
         # Combine coarse and fine points and sort by z_values
         all_rgb_sigma = torch.cat([fine_rgb_sigma, coarse_rgb_sigma], dim=2) # [batch_size, h * w, 2 * num_steps, tri_plane_out_dim + 1]
-        # all_sdf = torch.cat([fine_sdf, coarse_sdf], dim=2) # [batch_size, h * w, 2 * num_steps, tri_plane_out_dim + 1]
         all_z_vals = torch.cat([fine_z_vals, z_vals], dim=2) # [batch_size, h * w, 2 * num_steps, 1]
         _, indices = torch.sort(all_z_vals, dim=2) # [batch_size, h * w, 2 * num_steps, 1]
         all_z_vals = torch.gather(all_z_vals, dim=2, index=indices) # [batch_size, h * w, 2 * num_steps, 1]
         all_rgb_sigma = torch.gather(all_rgb_sigma, dim=2, index=indices.expand(-1, -1, -1, rgb_sigma_out_dim)) # [batch_size, h * w, 2 * num_steps, tri_plane_out_dim + 1]
-        # all_sdf = torch.gather(all_sdf, dim=2, index=indices.expand(-1, -1, -1, 1))
         # HIERARCHICAL SAMPLING END
         # <==================================================>
 
@@ -596,33 +435,7 @@ class SynthesisNetwork(torch.nn.Module):
         img = torch.cat([img, mask], dim=1)
 
         if verbose:
-            # coords = create_voxel_coords(32, [0.0, 0.0, 0.0], self.cfg.dataset.cube_scale * 2, batch_size=batch_size).to(img)
-            # coords_output = run_batchwise(
-            #     fn=canonical_renderer_pretrain, data=dict(coords=coords),
-            #     batch_size=max_batch_res ** 2 * num_steps, dim=1, 
-            #     mlp_f=self.tri_plane_mlp_f, mlp_b=self.tri_plane_mlp_b, template=self.template, texture_mlp=self.texture_mlp,
-            #     geo_x=geo_feats, tex_x=tex_feats, scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
-            #     geo_ws=geo_global_feat,
-            #     rt_radiance=False,
-            # ) # [batch_size, h * w * num_steps, num_feats]
-            
-            # uniform_coords = coords_output[...,:3]
-            # uniform_coords_f = coords_output[...,3:6]
-            # uniform_coords_b = coords_output[...,6:9]
-            # uniform_coords_sigmas = coords_output[...,9:10]
-            # uniform_coords_sdfs = coords_output[...,10:11]
-
             info = {}
-            # info['all_points'] = torch.cat([fine_points, points_world], dim=2) # [batch_size, h * w, 2 * num_steps, 3]
-            # info['all_f_pts'] = torch.cat([fine_f_pts, coarse_f_pts], dim=2) # [batch_size, h * w, 2 * num_steps, 3]
-            # info['all_b_pts'] = torch.cat([fine_b_pts, coarse_b_pts], dim=2) # [batch_size, h * w, 2 * num_steps, 3]
-            # info['all_rgb_sigma'] = all_rgb_sigma
-            # info['all_sdf'] = torch.cat([fine_sdf, coarse_sdf], dim=2) # [batch_size, h * w, 2 * num_steps, 3]
-            # info['uniform_coords'] = uniform_coords
-            # info['uniform_coords_f'] = uniform_coords_f
-            # info['uniform_coords_b'] = uniform_coords_b
-            # info['uniform_coords_sigmas'] = uniform_coords_sigmas
-            # info['uniform_coords_sdfs'] = uniform_coords_sdfs
             return img, info
         else:
             if return_tex:
@@ -670,27 +483,3 @@ class Generator(torch.nn.Module):
         tex_ws = self.tex_mapping(tex_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
         img = self.synthesis(geo_ws, tex_ws, points=p, camera_angles=camera_angles, update_emas=update_emas, **synthesis_kwargs)
         return img
-
-#----------------------------------------------------------------------------
-
-def create_voxel_coords(resolution=256, voxel_origin=[0.0, 0.0, 0.0], cube_size=2.0, batch_size: int=1):
-    # NOTE: the voxel_origin is actually the (bottom, left, down) corner, not the middle
-    voxel_origin = np.array(voxel_origin) - cube_size / 2
-    voxel_size = cube_size / (resolution - 1)
-
-    overall_index = torch.arange(0, resolution ** 3, 1, out=torch.LongTensor())
-    coords = torch.zeros(resolution ** 3, 3) # [h, w, d, 3]
-
-    # transform first 3 columns
-    # to be the x, y, z index
-    coords[:, 2] = overall_index % resolution
-    coords[:, 1] = (overall_index.float() / resolution) % resolution
-    coords[:, 0] = ((overall_index.float() / resolution) / resolution) % resolution
-
-    # transform first 3 columns
-    # to be the x, y, z coordinate
-    coords[:, 0] = (coords[:, 0] * voxel_size) + voxel_origin[2] # [voxel_res ** 3]
-    coords[:, 1] = (coords[:, 1] * voxel_size) + voxel_origin[1] # [voxel_res ** 3]
-    coords[:, 2] = (coords[:, 2] * voxel_size) + voxel_origin[0] # [voxel_res ** 3]
-
-    return coords.repeat(batch_size, 1, 1) # [batch_size, voxel_res ** 3, 3]
