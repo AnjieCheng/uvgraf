@@ -30,6 +30,7 @@ generator:
       hid_dim: 64 # Dimensionality of hidden layers
 
   texture:
+    type: cips # One of ["triplane", "cips"]
     res: 64 # Resolution for the tri-plane. It's higher than in EG3D since we train in high-res directly
     feat_dim: 32 # Dimensionality of the tri-plane
     fp32: true # Should we use it in fp32 only?

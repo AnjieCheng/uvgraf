@@ -456,24 +456,39 @@ class FoldSDF(nn.Module):
         return dpsr_gdt.float()
 
 
-    def forward(self, points, n_points=2048, multiplication=4, batch_p_2d=None):
+    def forward(self, points, n_points=2048, multiplication=2, batch_p_2d=None):
         batch_size, total_n_points = points.size(0), points.size(1)
         surface_points, surface_normals = points[..., 0:3], points[..., 3:6]
 
         if batch_p_2d is None:
-            batch_p_2d = self.template.get_random_points(num_points=n_points, batch_size=batch_size)
+            batch_p_2d = self.template.get_random_points(num_points=n_points, batch_size=batch_size*multiplication)
+            
+
         batch_p_2d = batch_p_2d.to(surface_points.device)
         
         indice = torch.tensor(random.sample(range(total_n_points), n_points)).to(surface_points.device)
         g_latent, l_latent = self.Encoder(surface_points[:,indice,:])
         g_latent_stacked = g_latent.view(batch_size, self.feat_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
+        if multiplication > 1:
+            g_latent_stacked = g_latent.view(batch_size, 1, 1, self.feat_dim).expand(-1, multiplication, n_points, -1)
+            g_latent_stacked = g_latent_stacked.reshape(batch_size * multiplication, n_points, -1)
+        else:
+            g_latent_stacked = g_latent.view(batch_size, self.feat_dim).contiguous().unsqueeze(1).expand(-1, n_points, -1)
         coords = self.Fold_P(g_latent_stacked, batch_p_2d)
         normals = self.Fold_N(g_latent_stacked, coords)
+
+        coords = coords.reshape(batch_size, multiplication*n_points, 3)
+        normals = normals.reshape(batch_size, multiplication*n_points, 3)
+        batch_p_2d = batch_p_2d.reshape(batch_size, multiplication*n_points, 3)
 
         coords_dimension = (coords.amax(dim=-2, keepdim=True) - coords.amin(dim=-2, keepdim=True)).amax(dim=-1, keepdim=True)
         coords = coords * 0.9 # / coords_dimension * 0.7
 
         sdf_grid = torch.tanh(self.dpsr(torch.clamp((coords+0.5), 0.0, 0.99).detach(), normals))
+
+        batch_p_2d = batch_p_2d[:,:,torch.LongTensor([2,1,0])]
+        coords = coords[:,:,torch.LongTensor([2,1,0])]
+        normals = normals [:,:,torch.LongTensor([2,1,0])]
 
         return batch_p_2d, coords, normals, sdf_grid.float()
 

@@ -2,8 +2,8 @@ name: compcars_${dataset.resolution}
 path: /home/anjie/Downloads/CADTextures/CompCars
 sampling:
   fov: 35 # 35
-  ray_start: 1.15
-  ray_end: 2.25
+  ray_start: 1.15 # 1.15
+  ray_end: 2.25 # 2.25
   dist: custom
   radius: 1.75 # 1.75
   horizontal_stddev: 3.141592653589793

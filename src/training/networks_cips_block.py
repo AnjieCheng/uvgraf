@@ -294,6 +294,17 @@ class ConstantInput(nn.Module):
         out = self.input.repeat(batch, 1, 1, 1)
         return out
 
+class ConstantInput3D(nn.Module):
+    def __init__(self, channel, size=2):
+        super().__init__()
+
+        self.input = nn.Parameter(torch.randn(1, channel, size, size, size))
+
+    def forward(self, input):
+        batch = input.shape[0]
+        out = self.input.repeat(batch, 1, 1, 1, 1)
+        return out
+
 
 class StyledConv(nn.Module):
     def __init__(
@@ -533,10 +544,11 @@ class SinActivation(nn.Module):
 class LFF(nn.Module):
     def __init__(self, hidden_size, ):
         super(LFF, self).__init__()
-        self.ffm = ConLinear(2, hidden_size, is_first=True)
+        self.ffm = ConLinear(3, hidden_size, is_first=True)
         self.activation = SinActivation()
 
     def forward(self, x):
+        # x = self.ffm(x.transpose(1,2)[:,:,:,None])
         x = self.ffm(x)
         x = self.activation(x)
         return x

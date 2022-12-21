@@ -29,29 +29,25 @@ from src.training.rendering import (
     compute_cam2world_matrix,
 )
 from src.training.training_utils import *
-from src.training.vis_helper import *
+
 
 @misc.profiled_function
-def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_world: torch.Tensor, 
+def canonical_renderer_pretrain(tex_x: torch.Tensor, coords: torch.Tensor, ray_d_world: torch.Tensor, 
                                 sdf_grid: torch.Tensor, folding_grid: torch.Tensor, folding_coords: torch.Tensor, folding_normals: torch.Tensor,
                                 texture_mlp: Callable, scale: float=1.0,  rt_sdf: bool=False, rt_radiance: bool=True) -> torch.Tensor:
     # geo
-    batch_size, num_uv, uv_feat_dim = uv_x.shape
+    batch_size, raw_feat_dim, h, w = tex_x.shape
     num_points = coords.shape[1]
 
-    # sdf_grid = sdf_grid.permute(0,1,4,3,2)
-
     coords_normed = coords / 0.5
-    # sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
     sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
-    
     # sigmas = torch.sigmoid(-sdfs / 0.005) / 0.005
 
     beta = 0.005
     alpha = 1 / beta
     sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
 
-    K = 4
+    K = 16
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)
     dis = dis.detach()
     indices = indices.detach()
@@ -68,9 +64,8 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     # sphere_uv_f = F.grid_sample(tex_x, grid=sphere_uv, mode='bilinear', align_corners=True).view(batch_size, 32, num_of_grids) # [batch_size, 3, feat_dim, num_points]
     # sphere_uv_f = sphere_uv_f.permute(0, 2, 1) # [batch_size, num_points, feat_dim]
 
-    # sphere_uv_f = get_feat_from_triplane(folding_grid, tex_x, scale=0.3).mean(dim=1)
-
-    fused_tex_feature = torch.sum(batched_index_select(uv_x, 1, indices).view(batch_size, num_points, K, 32) * weights[..., None], dim=-2)
+    sphere_uv_f = get_feat_from_triplane(folding_grid, tex_x, scale=0.3).mean(dim=1)
+    fused_tex_feature = torch.sum(batched_index_select(sphere_uv_f, 1, indices).view(batch_size, num_points, K, 32) * weights[..., None], dim=-2)
     # fused_tex_normal = torch.sum(batched_index_select(folding_normals, 1, indices).view(batch_size, num_points, K, 3) * weights[..., None], dim=-2)
 
     # volume rgbs
@@ -78,16 +73,7 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     sdf_grid_grad = torch.gradient(sdf_grid.squeeze(1))
     normal_grid = torch.stack([sdf_grid_grad[0], sdf_grid_grad[1], sdf_grid_grad[2]], dim=1)
     normals = F.grid_sample(normal_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 3)
-    rgbs = texture_mlp(fused_tex_feature, normals.detach() * 0, sdfs.detach() * 0) # [batch_size, num_points, out_dim]
-    # import pdb; pdb.set_trace()
-
-    # normed_bp2d = torch.clip((folding_grid+0.5), 0, 1) # normalize color to 0-1
-    # rgbs = rgbs * 0 + (batched_index_select(normed_bp2d, 1, indices).view(batch_size, num_points, 3))
-    
-    # import pdb; pdb.set_trace()
-    # ff = plotly_gen_points(folding_coords[0], color=sphere_to_color(normed_bp2d[0].cpu().numpy(), 0.5), rt_html=False, png_path=None)
-    # ff = plotly_gen_points(coords[0][(torch.abs(sdfs[0]) < 0.1).squeeze()], color=None, rt_html=False, png_path=None)
-    # plotly_gen_points(folding_coords[0], color=None, rt_html=False, png_path=None)
+    rgbs = texture_mlp(fused_tex_feature, normals.detach() * 0 + 1, sdfs.detach() * 0 + 1) # [batch_size, num_points, out_dim]
 
     return torch.cat([rgbs, sigmas.detach()], dim=-1)
 
@@ -238,14 +224,13 @@ class SynthesisNetwork(torch.nn.Module):
         self.img_channels = img_channels
 
         self.fold_sdf = FoldSDF(feat_dim=256, 
-                                ckpt_path="/home/anjie/Projects/FoldSDF/logs/2022-12-14T21-48-13_foldsdf_texturify_car_0/checkpoints/epoch=004999.ckpt",
+                                ckpt_path="/home/anjie/Projects/FoldSDF/logs/2022-12-11T01-10-43_dev_texturify_car/checkpoints/last.ckpt",
                                 ignore_keys=['dpsr'])
 
         # rgb
         if self.cfg.texture.type == "cips":
             self.texture_decoder = CIPSres(style_dim=256, out_dim=32)
         elif self.cfg.texture.type == "triplane":
-            assert TypeError
             texture_decoder_out_channels = 32 * 3
             self.texture_decoder = SynthesisBlocksSequence(
                 w_dim=w_dim,
@@ -277,6 +262,12 @@ class SynthesisNetwork(torch.nn.Module):
     def progressive_update(self, cur_kimg: float):
         self.nerf_noise_std = linear_schedule(cur_kimg, self.cfg.nerf_noise_std_init, 0.0, self.cfg.nerf_noise_kimg_growth)
 
+    @torch.no_grad()
+    def compute_densities(self, ws: torch.Tensor, coords: torch.Tensor, max_batch_res: int=32, use_bg: bool=False, **block_kwargs) -> torch.Tensor:
+        """
+        coords: [batch_size, num_points, 3]
+        """
+        raise NotImplementedError
 
     def forward(self, geo_ws, tex_ws, camera_angles: torch.Tensor, points: torch.Tensor=None, patch_params: Dict=None, max_batch_res: int=128, return_depth: bool=False, ignore_bg: bool=False, bg_only: bool=False, fov=None, verbose: bool=False, return_tex: bool=False, **block_kwargs):
         """
@@ -293,6 +284,11 @@ class SynthesisNetwork(torch.nn.Module):
             fov = camera_angles[:,4]
             camera_angles = camera_angles[:,:3]
 
+        if self.cfg.backbone == 'raw_planes':
+            tex_feats = self.texture_decoder.repeat(len(tex_ws), 1, 1, 1) + tex_ws.sum() * 0.0 # [batch_size, 3, 256, 256]
+        else:
+            tex_feats = self.texture_decoder(tex_ws[:, :self.texture_decoder.num_ws], **block_kwargs) # [batch_size, feat_dim, tp_h, tp_w]
+
         batch_size = geo_ws.shape[0]
         h = w = (self.train_resolution if self.training else self.test_resolution)
         fov = self.cfg.dataset.sampling.fov if fov is None else fov # [1] or [batch_size]
@@ -300,14 +296,9 @@ class SynthesisNetwork(torch.nn.Module):
         self.fold_sdf.eval()
         with torch.no_grad():
             points = points.to(geo_ws.device)
-            batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points)
-            # sdf_grid = self.fold_sdf.forward_gdt(points)
+            batch_p_2d, folding_points, folding_normals, sdf_grid_learned = self.fold_sdf(points)
+            sdf_grid = self.fold_sdf.forward_gdt(points)
             sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
-
-        # import pdb; pdb.set_trace()
-
-        if self.cfg.texture.type == "cips":
-            uv_feats = self.texture_decoder(batch_p_2d, tex_ws[:, 0]) # [batch_size, feat_dim, tp_h, tp_w]
 
         num_steps = self.cfg.num_ray_steps
         rgb_sigma_out_dim = 4
@@ -324,7 +315,7 @@ class SynthesisNetwork(torch.nn.Module):
         coarse_output = run_batchwise(
             fn=canonical_renderer_pretrain, data=dict(coords=points_world),
             batch_size=max_batch_res ** 2 * num_steps, dim=1, 
-            texture_mlp=self.texture_mlp, uv_x=uv_feats, 
+            texture_mlp=self.texture_mlp, tex_x=tex_feats, 
             scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
             folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals, sdf_grid=sdf_grid,
         ) # [batch_size, h * w * num_steps, num_feats]
@@ -358,7 +349,7 @@ class SynthesisNetwork(torch.nn.Module):
         fine_output = run_batchwise(
             fn=canonical_renderer_pretrain, data=dict(coords=fine_points),
             batch_size=max_batch_res ** 2 * num_steps, dim=1, 
-            texture_mlp=self.texture_mlp, uv_x=uv_feats, 
+            texture_mlp=self.texture_mlp, tex_x=tex_feats, 
             scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
             folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals, sdf_grid=sdf_grid,
         ) # [batch_size, h * w * num_steps, num_feats]

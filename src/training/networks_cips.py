@@ -10,7 +10,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from src.training.networks_cips_block import ConstantInput, LFF, StyledConv, ToRGB, PixelNorm, EqualLinear, StyledResBlock
+from src.training.networks_cips_block import ConstantInput3D, ConstantInput, LFF, StyledConv, ToRGB, PixelNorm, EqualLinear, StyledResBlock
 
 
 class CIPSskip(nn.Module):
@@ -117,15 +117,16 @@ class CIPSskip(nn.Module):
 
 
 class CIPSres(nn.Module):
-    def __init__(self, size=256, hidden_size=512, n_mlp=8, style_dim=512, lr_mlp=0.01,
-                 activation=None, channel_multiplier=2, **kwargs):
+    def __init__(self, size=256, hidden_size=256, n_mlp=8, style_dim=512, lr_mlp=0.01,
+                 activation=None, channel_multiplier=2, out_dim=32, **kwargs):
         super(CIPSres, self).__init__()
 
         self.size = size
         demodulate = True
         self.demodulate = demodulate
         self.lff = LFF(int(hidden_size))
-        self.emb = ConstantInput(hidden_size, size=size)
+        self.emb = ConstantInput3D(hidden_size, size=8)
+        self.num_ws = 1
 
         self.channels = {
             0: 512,
@@ -135,8 +136,7 @@ class CIPSres(nn.Module):
             4: 256 * channel_multiplier,
             5: 128 * channel_multiplier,
             6: 64 * channel_multiplier,
-            7: 64 * channel_multiplier,
-            8: 32 ,
+            7: out_dim,
         }
 
         self.linears = nn.ModuleList()
@@ -148,7 +148,7 @@ class CIPSres(nn.Module):
         self.log_size = int(math.log(size, 2))
         self.num_layers = (self.log_size - 2) * 2 + 1
 
-        for i in range(0, self.log_size - 1):
+        for i in range(0, self.log_size):
             out_channels = self.channels[i]
             self.linears.append(StyledResBlock(in_channels, out_channels, 1, style_dim, demodulate=demodulate,
                                                activation=activation))
@@ -178,7 +178,9 @@ class CIPSres(nn.Module):
                 input_is_latent=False,
                 ):
 
-        latent = latent[0]
+        # latent = latent[0]
+        coords_normed = coords / 0.5
+        coords_normed = coords_normed.transpose(1,2)[:,:,:,None]
 
         if truncation < 1:
             latent = truncation_latent + truncation * (latent - truncation_latent)
@@ -186,25 +188,25 @@ class CIPSres(nn.Module):
         if not input_is_latent:
             latent = self.style(latent)
 
-        x = self.lff(coords)
+        x = self.lff(coords_normed)
 
-        batch_size, _, w, h = coords.shape
-        if self.training and w == h == self.size:
-            emb = self.emb(x)
-        else:
-            emb = F.grid_sample(
-                self.emb.input.expand(batch_size, -1, -1, -1),
-                coords.permute(0, 2, 3, 1).contiguous(),
-                padding_mode='border', mode='bilinear',
-            )
+        batch_size, _, w, h = coords_normed.shape
+
+        emb = F.grid_sample(
+            self.emb.input.expand(batch_size, -1, -1, -1, -1),
+            coords_normed.permute(0, 2, 3, 1).contiguous().view(batch_size, w, h, 1, 3),
+            padding_mode='border', mode='bilinear',
+        ).squeeze(4)
+
         out = torch.cat([x, emb], 1)
 
         for con in self.linears:
             out = con(out, latent)
 
         # out = self.to_rgb_last(out, latent)
+        out = out.transpose(1,2).squeeze(3)
 
         if return_latents:
             return out, latent
         else:
-            return out, None
+            return out
