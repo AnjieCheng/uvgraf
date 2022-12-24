@@ -29,6 +29,8 @@ dependencies:
     - tensorboard==2.4.1
     - tqdm
     - moviepy
+    - plyfile
+    - plotly
     - opencv-python
     - gitpython
     - gpustat
