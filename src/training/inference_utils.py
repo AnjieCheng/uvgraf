@@ -16,8 +16,8 @@ from src.training.rendering import sample_camera_angles
 
 def setup_snapshot_image_grid(training_set, cfg, random_seed=0):
     rnd = np.random.RandomState(random_seed)
-    gw = np.clip(7680 // training_set.image_shape[2], 4, 4)
-    gh = np.clip(4320 // training_set.image_shape[1], 4, 4)
+    gw = np.clip(7680 // training_set.image_shape[2], 3, 3)
+    gh = np.clip(4320 // training_set.image_shape[1], 3, 3)
 
     # No labels => show random subset of training samples.
     if not training_set.has_labels:

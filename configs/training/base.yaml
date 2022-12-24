@@ -40,7 +40,7 @@ patch:
     divisor: ${dataset.resolution}
   max_scale: 1.0
   anneal_kimg: 10000
-  resolution: 16 # default 64 / 16 works for carla64
+  resolution: 64 # default 64 / 16 works for carla64
   mbstd_group_size: ${model.discriminator.mbstd_group_size}
 
 augment:

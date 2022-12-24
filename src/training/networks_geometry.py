@@ -456,7 +456,7 @@ class FoldSDF(nn.Module):
         return dpsr_gdt.float()
 
 
-    def forward(self, points, n_points=2048, multiplication=2, batch_p_2d=None):
+    def forward(self, points, n_points=2048, multiplication=4, batch_p_2d=None):
         batch_size, total_n_points = points.size(0), points.size(1)
         surface_points, surface_normals = points[..., 0:3], points[..., 3:6]
 
@@ -482,7 +482,7 @@ class FoldSDF(nn.Module):
         batch_p_2d = batch_p_2d.reshape(batch_size, multiplication*n_points, 3)
 
         coords_dimension = (coords.amax(dim=-2, keepdim=True) - coords.amin(dim=-2, keepdim=True)).amax(dim=-1, keepdim=True)
-        coords = coords * 0.9 # / coords_dimension * 0.7
+        coords = coords * 0.95 # / coords_dimension * 0.7
 
         sdf_grid = torch.tanh(self.dpsr(torch.clamp((coords+0.5), 0.0, 0.99).detach(), normals))
 

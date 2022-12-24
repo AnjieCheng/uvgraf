@@ -51,7 +51,7 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     alpha = 1 / beta
     sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
 
-    K = 4
+    K = 16
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)
     dis = dis.detach()
     indices = indices.detach()
@@ -78,7 +78,7 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     sdf_grid_grad = torch.gradient(sdf_grid.squeeze(1))
     normal_grid = torch.stack([sdf_grid_grad[0], sdf_grid_grad[1], sdf_grid_grad[2]], dim=1)
     normals = F.grid_sample(normal_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 3)
-    rgbs = texture_mlp(fused_tex_feature, normals.detach() * 0, sdfs.detach() * 0) # [batch_size, num_points, out_dim]
+    rgbs = texture_mlp(fused_tex_feature, normals.detach(), sdfs.detach()) # [batch_size, num_points, out_dim]
     # import pdb; pdb.set_trace()
 
     # normed_bp2d = torch.clip((folding_grid+0.5), 0, 1) # normalize color to 0-1
@@ -238,7 +238,7 @@ class SynthesisNetwork(torch.nn.Module):
         self.img_channels = img_channels
 
         self.fold_sdf = FoldSDF(feat_dim=256, 
-                                ckpt_path="/home/anjie/Projects/FoldSDF/logs/2022-12-14T21-48-13_foldsdf_texturify_car_0/checkpoints/epoch=004999.ckpt",
+                                ckpt_path="/data2/anjie/Projects/uvgraf/experiments/epoch=004999.ckpt",
                                 ignore_keys=['dpsr'])
 
         # rgb
@@ -264,7 +264,7 @@ class SynthesisNetwork(torch.nn.Module):
         self.num_ws = self.texture_decoder.num_ws
         self.nerf_noise_std = 0.0
         self.train_resolution = self.cfg.patch.resolution if self.cfg.patch.enabled else self.img_resolution
-        self.test_resolution = 64 # self.img_resolution
+        self.test_resolution = 128 # self.img_resolution
 
         if self.cfg.bg_model.type in (None, "plane"):
             self.bg_model = None

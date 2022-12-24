@@ -128,6 +128,7 @@ def training_loop(
     # resume_geo_pkl = "/data/anjie/Projects/epigraf/experiments/carla_64_canograf_patch_beta_p16_mins0.25_sdf_tex_13_retrain_relu_nopretrain-1ba450e/output/network-snapshot-002016.pkl"
     # resume_geo_pkl = "/data/anjie/Projects/epigraf/experiments/carla_64_canograf_patch_beta_p16_mins0.25_sdf_tex_666_pretrain_1-124f437/output/network-snapshot-015120.pkl"
     resume_geo_pkl = None
+    resume_geo_pkl = "/data2/anjie/Projects/uvgraf/experiments/compcars_128_canograf_patch_beta_p64_mins0.5_dev_8-16c7b3a/output/network-snapshot-005075.pkl"
     if not resume_geo_pkl is None:
         print(f'Resuming from "{resume_geo_pkl}"')
         with dnnlib.util.open_url(resume_geo_pkl) as f:

@@ -47,7 +47,7 @@ def canonical_renderer_pretrain(tex_x: torch.Tensor, coords: torch.Tensor, ray_d
     alpha = 1 / beta
     sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
 
-    K = 16
+    K = 4
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)
     dis = dis.detach()
     indices = indices.detach()
@@ -73,7 +73,7 @@ def canonical_renderer_pretrain(tex_x: torch.Tensor, coords: torch.Tensor, ray_d
     sdf_grid_grad = torch.gradient(sdf_grid.squeeze(1))
     normal_grid = torch.stack([sdf_grid_grad[0], sdf_grid_grad[1], sdf_grid_grad[2]], dim=1)
     normals = F.grid_sample(normal_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 3)
-    rgbs = texture_mlp(fused_tex_feature, normals.detach() * 0 + 1, sdfs.detach() * 0 + 1) # [batch_size, num_points, out_dim]
+    rgbs = texture_mlp(fused_tex_feature, normals.detach(), sdfs.detach()) # [batch_size, num_points, out_dim]
 
     return torch.cat([rgbs, sigmas.detach()], dim=-1)
 
