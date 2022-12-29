@@ -51,7 +51,7 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     alpha = 1 / beta
     sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
 
-    K = 16
+    K = 8
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)
     dis = dis.detach()
     indices = indices.detach()
