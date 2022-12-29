@@ -264,7 +264,7 @@ class SynthesisNetwork(torch.nn.Module):
         self.num_ws = self.texture_decoder.num_ws
         self.nerf_noise_std = 0.0
         self.train_resolution = self.cfg.patch.resolution if self.cfg.patch.enabled else self.img_resolution
-        self.test_resolution = 64 # self.img_resolution
+        self.test_resolution = self.img_resolution
 
         if self.cfg.bg_model.type in (None, "plane"):
             self.bg_model = None
@@ -286,6 +286,12 @@ class SynthesisNetwork(torch.nn.Module):
         patch_params: Dict {scales: [batch_size, 2], offsets: [batch_size, 2]} --- patch parameters (when we do patchwise training)
         """
         # misc.assert_shape(camera_angles, [len(geo_ws), 3])
+        if not self.training:
+            max_batch_res = 32
+            foldsdf_level = 5
+        else:
+            foldsdf_level = 4
+
         if camera_angles.size(1) == 3:
             radius = self.cfg.dataset.sampling.radius
         elif camera_angles.size(1) == 5:
@@ -300,7 +306,8 @@ class SynthesisNetwork(torch.nn.Module):
         self.fold_sdf.eval()
         with torch.no_grad():
             points = points.to(geo_ws.device)
-            batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points)
+
+            batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points, level=foldsdf_level)
             # sdf_grid = self.fold_sdf.forward_gdt(points)
             sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
 

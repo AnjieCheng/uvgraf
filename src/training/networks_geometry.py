@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import trimesh
 import random
+from pytorch3d.utils import ico_sphere
 
 from torch.nn import AvgPool2d, Conv1d, Conv2d, Embedding, LeakyReLU, Module
 
@@ -358,8 +359,23 @@ class SphereTemplate(nn.Module):
     def __init__(self, radius=0.5):
         super().__init__()
         self.dim = 3
-        self.npoints = 0
         self.radius = radius
+        self.ico_sphere = {}
+        for i in range(6):
+            points = ico_sphere(i)._verts_list[0] * self.radius 
+            rand_indx = torch.randperm(ico_sphere(i)._verts_list[0].size(0))
+            self.ico_sphere[i] = points[rand_indx]
+            # 4: 2562
+            # 5: 10242
+            # 6: 40962
+
+    def get_regular_points(self, level=4, batch_size=None):
+        if batch_size is not None:
+            points = self.ico_sphere[level][None, : , :]
+            points = points.expand(batch_size, -1, -1)
+            return points
+        else:
+            return self.ico_sphere[level]
 
     def get_random_points(self, num_points=2048, batch_size=None):
         if batch_size is not None:
@@ -456,14 +472,22 @@ class FoldSDF(nn.Module):
         return dpsr_gdt.float()
 
 
-    def forward(self, points, n_points=2048, multiplication=4, batch_p_2d=None):
+    def forward(self, points, level=5, batch_p_2d=None):
         batch_size, total_n_points = points.size(0), points.size(1)
         surface_points, surface_normals = points[..., 0:3], points[..., 3:6]
 
         if batch_p_2d is None:
-            batch_p_2d = self.template.get_random_points(num_points=n_points, batch_size=batch_size*multiplication)
+            # batch_p_2d = self.template.get_random_points(num_points=n_points, batch_size=batch_size*multiplication)
+            batch_p_2d = self.template.get_regular_points(level=level, batch_size=batch_size)
+            if level == 5:
+                # hacky way to minimize num_points of batch_p_2d 
+                batch_p_2d = batch_p_2d.reshape(batch_size*6, batch_p_2d.size(1)//6, 3)
+                n_points = batch_p_2d.size(1)
+                multiplication = 6
+            elif level == 4:
+                n_points = batch_p_2d.size(1)
+                multiplication = 1
             
-
         batch_p_2d = batch_p_2d.to(surface_points.device)
         
         indice = torch.tensor(random.sample(range(total_n_points), n_points)).to(surface_points.device)

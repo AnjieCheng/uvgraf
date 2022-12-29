@@ -253,7 +253,6 @@ class Discriminator(torch.nn.Module):
             self.head_mapping = None
         self.b4 = DiscriminatorEpilogue(
             channels_dict[4], cmap_dim=cmap_dim, resolution=4, **epilogue_kwargs, **common_kwargs)
-        import pdb; pdb.set_trace()
 
     def forward(self, img, c: torch.Tensor=None, patch_params: torch.Tensor=None, camera_angles: torch.Tensor=None, update_emas=False, **block_kwargs):
         _ = update_emas # unused
