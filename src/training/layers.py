@@ -189,7 +189,7 @@ class Conv2dLayer(torch.nn.Module):
         channels_last     = False,        # Expect the input to have memory_format=channels_last?
         trainable         = True,         # Update the weights of this layer during training?
         c_dim             = 0,            # Passing c via re-normalization?
-        hyper_mod            = False,        # Should we use hypernet-based modulation?
+        hyper_mod         = False,        # Should we use hypernet-based modulation?
     ):
         super().__init__()
         self.in_channels = in_channels

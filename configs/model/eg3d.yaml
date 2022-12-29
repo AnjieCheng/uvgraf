@@ -43,9 +43,8 @@ generator:
     num_steps: 8 # Number of steps per ray
     start: 1.0 # Start plane for the background in terms of disparity, i.e. in [1, 0) range
 
-discriminator:
-  # Should we use patch parameters modulation for the discriminator?
-  hyper_mod: true
+# discriminator:
+#   # Should we use patch parameters modulation for the discriminator?
 
 loss_kwargs:
   blur_init_sigma: 10

@@ -25,3 +25,7 @@ python scripts/data_scripts/process_srn.py --target_dir data/chairs_64 --size 64
 * carla_64: https://drive.google.com/file/d/1sIJY-MJ-ph9vdFpj4y6hbH65riRTJMkq/view?usp=sharing
 
 * srnchairs_64: https://drive.google.com/file/d/1BJLTarlb0MShWqkqlZ3Dx2BatBy0ZI6p/view?usp=sharing
+
+* Currently does not support no_patch 32x32 discriminator (b4 block wrong resolution)
+
+* Currently does not support snapshot vis grid with odd number... because torch.gradient not supporting batch_size=1

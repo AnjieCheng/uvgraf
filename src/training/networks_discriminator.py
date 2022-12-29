@@ -33,7 +33,7 @@ class DiscriminatorBlock(torch.nn.Module):
         freeze_layers       = 0,            # Freeze-D: Number of layers to freeze.
         down                = 2,            # Downsampling factor
         c_dim               = 0,            # Hyper-conditioning dimension
-        hyper_mod              = False,        # Should we use hyper-cond in Conv2dLayer?
+        hyper_mod           = False,        # Should we use hyper-cond in Conv2dLayer?
     ):
         assert in_channels in [0, tmp_channels]
         super().__init__()
@@ -207,19 +207,19 @@ class Discriminator(torch.nn.Module):
 
         # Concatenating coordinates to the input
         self.img_channels = img_channels
-        self.img_channels_drgb = img_channels
-        self.img_channels_dmask = 1
 
         if self.cfg.patch.patch_params_cond > 0:
             self.scalar_enc = ScalarEncoder1d(coord_dim=3, x_multiplier=1000.0, const_emb_dim=256)
+            self.hyper_mod = True
             assert self.scalar_enc.get_dim() > 0
         else:
+            self.hyper_mod = False
             self.scalar_enc = None
 
         if (self.c_dim == 0) and (self.scalar_enc is None) and (not self.cfg.camera_cond):
             cmap_dim = 0
 
-        if self.cfg.hyper_mod:
+        if self.hyper_mod:
             hyper_mod_dim = 512
             self.hyper_mod_mapping = MappingNetwork(
                 z_dim=0, c_dim=self.scalar_enc.get_dim(), camera_cond=False, camera_cond_drop_p=0.0,
@@ -241,7 +241,7 @@ class Discriminator(torch.nn.Module):
             down = 1 if i < self.cfg.num_additional_start_blocks else 2
             block = DiscriminatorBlock(
                 cfg, in_channels, tmp_channels, out_channels, resolution=res, first_layer_idx=cur_layer_idx, use_fp16=use_fp16,
-                down=down, c_dim=hyper_mod_dim, hyper_mod=self.cfg.hyper_mod, **block_kwargs, **common_kwargs)
+                down=down, c_dim=hyper_mod_dim, hyper_mod=self.hyper_mod, **block_kwargs, **common_kwargs)
             setattr(self, f'b{res}', block)
             cur_layer_idx += block.num_layers
 
@@ -253,32 +253,7 @@ class Discriminator(torch.nn.Module):
             self.head_mapping = None
         self.b4 = DiscriminatorEpilogue(
             channels_dict[4], cmap_dim=cmap_dim, resolution=4, **epilogue_kwargs, **common_kwargs)
-
-        # Step 2: set up discriminator for mask image
-        common_kwargs = dict(img_channels=1, conv_clamp=conv_clamp)
-        total_conditioning_dim = c_dim + (0 if self.scalar_enc is None else self.scalar_enc.get_dim())
-        cur_layer_idx = 0
-
-        for i, res in enumerate(self.block_resolutions):
-            in_channels = channels_dict[res] if res < self.img_resolution else 0
-            tmp_channels = channels_dict[res]
-            out_channels = channels_dict[res // 2]
-            use_fp16 = (res >= fp16_resolution)
-            down = 1 if i < self.cfg.num_additional_start_blocks else 2
-            block = DiscriminatorBlock(
-                cfg, in_channels, tmp_channels, out_channels, resolution=res, first_layer_idx=cur_layer_idx, use_fp16=use_fp16,
-                down=down, c_dim=hyper_mod_dim, hyper_mod=self.cfg.hyper_mod, **block_kwargs, **common_kwargs)
-            setattr(self, f'mask_b{res}', block)
-            cur_layer_idx += block.num_layers
-
-        if self.c_dim > 0 or not self.scalar_enc is None:
-            self.mask_head_mapping = MappingNetwork(
-                z_dim=0, c_dim=total_conditioning_dim, camera_cond=self.cfg.camera_cond, camera_cond_drop_p=self.cfg.camera_cond_drop_p,
-                w_dim=cmap_dim, num_ws=None, w_avg_beta=None, **mapping_kwargs)
-        else:
-            self.mask_head_mapping = None
-        self.mask_b4 = DiscriminatorEpilogue(
-            channels_dict[4], cmap_dim=cmap_dim, resolution=4, **epilogue_kwargs, **common_kwargs)
+        import pdb; pdb.set_trace()
 
     def forward(self, img, c: torch.Tensor=None, patch_params: torch.Tensor=None, camera_angles: torch.Tensor=None, update_emas=False, **block_kwargs):
         _ = update_emas # unused
@@ -295,31 +270,13 @@ class Discriminator(torch.nn.Module):
             else:
                 c = patch_scale_embs # [batch_size, c_dim + fourier_dim]
             hyper_mod_c = self.hyper_mod_mapping(z=None, c=patch_scale_embs) # [batch_size, 512]
-        
-        # Step 1: feed the mask image into the discriminator
-        mask_x = None
-        mask_img = img[:, self.img_channels_drgb:self.img_channels_drgb + self.img_channels_dmask, :, :]  # This is only supervising the geometry
-        for res in self.block_resolutions:
-            block = getattr(self, f'mask_b{res}')
-            mask_x = block(mask_x, mask_img, c=hyper_mod_c, **block_kwargs)
-
-        if self.c_dim > 0 or not self.scalar_enc is None:
-            assert c.shape[1] > 0
-        if not self.mask_head_mapping is None:
-            mask_cmap = self.mask_head_mapping(z=None, c=c, camera_angles=camera_angles) # [TODO]
         else:
-            mask_cmap = None
-        mask_x = self.mask_b4(mask_x, mask_cmap)
-        mask_x = mask_x.squeeze(1) # [batch_size]
-        misc.assert_shape(mask_x, [batch_size])
+            hyper_mod_c = None
 
-
-        # Step 2: feed the RGB image into another discriminator
         x = None
-        img_for_tex = img[:, :self.img_channels_drgb, :, :]
         for res in self.block_resolutions:
             block = getattr(self, f'b{res}')
-            x = block(x, img_for_tex, c=hyper_mod_c, **block_kwargs)
+            x = block(x, img, c=hyper_mod_c, **block_kwargs)
 
         if self.c_dim > 0 or not self.scalar_enc is None:
             assert c.shape[1] > 0
@@ -332,7 +289,7 @@ class Discriminator(torch.nn.Module):
         x = x.squeeze(1) # [batch_size]
         misc.assert_shape(x, [batch_size])
 
-        return x, mask_x
+        return x
 
     def extra_repr(self):
         return f'c_dim={self.c_dim:d}, img_resolution={self.img_resolution:d}, img_channels={self.img_channels:d}'

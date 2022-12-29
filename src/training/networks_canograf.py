@@ -238,7 +238,7 @@ class SynthesisNetwork(torch.nn.Module):
         self.img_channels = img_channels
 
         self.fold_sdf = FoldSDF(feat_dim=256, 
-                                ckpt_path="/data2/anjie/Projects/uvgraf/experiments/epoch=004999.ckpt",
+                                ckpt_path="../../pretrain/foldsdf_car.ckpt",
                                 ignore_keys=['dpsr'])
 
         # rgb
@@ -264,7 +264,7 @@ class SynthesisNetwork(torch.nn.Module):
         self.num_ws = self.texture_decoder.num_ws
         self.nerf_noise_std = 0.0
         self.train_resolution = self.cfg.patch.resolution if self.cfg.patch.enabled else self.img_resolution
-        self.test_resolution = 128 # self.img_resolution
+        self.test_resolution = 64 # self.img_resolution
 
         if self.cfg.bg_model.type in (None, "plane"):
             self.bg_model = None

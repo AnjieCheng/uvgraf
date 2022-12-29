@@ -30,7 +30,6 @@ discriminator:
   mbstd_group_size: 4 # Minibatch std group size
   camera_cond: false
   camera_cond_drop_p: 0.0
-  hyper_mod: false
 
   optim:
     lr: 0.002

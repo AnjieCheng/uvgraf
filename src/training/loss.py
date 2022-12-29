@@ -77,12 +77,14 @@ class StyleGAN2Loss(Loss):
                 ws[:, cutoff:] = self.G.mapping(z=torch.randn_like(z), c=c, camera_angles=camera_angles_cond, update_emas=False)[:, cutoff:]
         patch_params = sample_patch_params(len(z), self.patch_cfg, device=z.device) if self.patch_cfg['enabled'] else {}
         patch_kwargs = dict(patch_params=patch_params) if self.patch_cfg['enabled'] else None
-        img = self.G.synthesis(ws, camera_angles, update_emas=update_emas, **patch_kwargs)
-        return img, ws, patch_params
+        img_mask = self.G.synthesis(ws, camera_angles, update_emas=update_emas, **patch_kwargs)
 
-    def run_D(self, in_img, blur_sigma=0, update_emas=False, **kwargs):
-        img = in_img[:,:3,...]
-        mask = in_img[:,3:4,...]
+        return img_mask, ws, patch_params
+
+    def run_D(self, img_mask, blur_sigma=0, update_emas=False, **kwargs):
+        assert img_mask.size(1) == 4
+        img = img_mask[:,:3,...]
+        # mask = img_mask[:,3:4,...]
         blur_size = np.floor(blur_sigma * 3)
         if blur_size > 0:
             with torch.autograd.profiler.record_function('blur'):
@@ -90,8 +92,8 @@ class StyleGAN2Loss(Loss):
                 img = upfirdn2d.filter2d(img, f / f.sum())
         if self.augment_pipe is not None:
             img = self.augment_pipe(img, num_frames=img.shape[1] // self.G.img_channels) # [batch_size, c * 2, h, w]
-        logits, logits_mask = self.D(torch.cat([img,mask], dim=1), update_emas=update_emas, **kwargs)
-        return logits, logits_mask
+        logits = self.D(img, update_emas=update_emas, **kwargs)
+        return logits
 
     def extract_patches(self, img: torch.Tensor):
         patch_params = sample_patch_params(len(img), self.patch_cfg, device=img.device)
@@ -197,7 +199,7 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                 tex_ws[:, tex_cutoff:] = self.G.tex_mapping(z=torch.randn_like(tex_z), camera_angles=camera_angles_cond, update_emas=False)[:, tex_cutoff:]
         
         patch_params = sample_patch_params(len(z), self.patch_cfg, device=z.device) if self.patch_cfg['enabled'] else {}
-        patch_kwargs = dict(patch_params=patch_params) if self.patch_cfg['enabled'] else None
+        patch_kwargs = dict(patch_params=patch_params) if self.patch_cfg['enabled'] else dict(patch_params=None)
 
         if verbose:
             img, G_info = self.G.synthesis(geo_ws, tex_ws, camera_angles, points=points, update_emas=update_emas, verbose=True, **patch_kwargs)
@@ -218,34 +220,12 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                 with torch.autograd.profiler.record_function('Gmain_forward'):
                     gen_img, _gen_ws, patch_params, info = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, verbose=True, points=points)
                     gen_logits = self.run_D(gen_img, blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=gen_camera_angles)
-                    gen_logits, gen_logits_mask = gen_logits
                     
                     training_stats.report('Loss/scores/fake', gen_logits)
                     training_stats.report('Loss/signs/fake', gen_logits.sign())
-                    loss_Grgb = torch.nn.functional.softplus(-gen_logits).mean()
-                    training_stats.report('Loss/G/loss_rgb', loss_Grgb)
 
-                    # training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
-                    # training_stats.report('Loss/signs/fake_mask', gen_logits_mask.sign())
-                    # loss_Gmask = torch.nn.functional.softplus(-gen_logits_mask).mean()
-                    # training_stats.report('Loss/G/loss_mask', loss_Gmask)
-                    loss_Gmain = loss_Grgb # + loss_Gmask
+                    loss_Gmain = torch.nn.functional.softplus(-gen_logits).mean()
                     training_stats.report('Loss/G/loss', loss_Gmain)
-
-                    # loss_Ginverse = torch.nn.functional.mse_loss(info['uniform_coords'], info['uniform_coords_b'], reduction='none')
-                    # # Todo: (loss_Ginverse * info['uniform_coords_sigmas'].detach()).mean()
-                    # # maybe better way is to sample high density points from canonical volume and --> f(x) --> f'(x)
-                    # loss_Ginverse = loss_Ginverse.mean() # (info['uniform_coords_sigmas']
-                    # training_stats.report('Loss/G/inverse', loss_Ginverse)
-                    # training_stats.report('scalar/G/template/beta', self.G.synthesis.template.density.beta)
-
-                    # # sdf_grad = gradient(info['all_sdf'], info['all_points'])
-                    # loss_Gsdf = torch.abs(info['all_sdf'].norm(dim=-1) - 1) # ((sdf_grad.norm(2, dim=-1) - 1) ** 2).mean()
-                    # training_stats.report('Loss/G/sdf', loss_Gsdf)
-
-                    # chamferDist = ChamferDistance()
-                    # loss_Gcoverage = chamferDist(info['uniform_coords'], info['uniform_coords_f'], bidirectional=True).mean()
-                    # training_stats.report('Loss/G/coverage', loss_Gcoverage)
 
                 with torch.autograd.profiler.record_function('Gmain_backward'):
                     (loss_Gmain.mean()).mul(gain).backward() #  +loss_Gsdf.mean()+loss_Gcoverage.mean()
@@ -259,7 +239,6 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                 with torch.no_grad():
                     gen_img, _gen_ws, patch_params = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, update_emas=True, points=points)
                 gen_logits = self.run_D(gen_img, blur_sigma=blur_sigma, update_emas=True, patch_params=patch_params, camera_angles=gen_camera_angles)
-                gen_logits, gen_logits_mask = gen_logits
                 
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
@@ -268,12 +247,6 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Dgen = torch.nn.functional.softplus(gen_logits).mean()  # -log(1 - sigmoid(gen_logits))
                 training_stats.report('Loss/D/loss_genrgb', loss_Dgen)
-
-                # training_stats.report('Loss/scores/fake_mask', gen_logits_mask)
-                # training_stats.report('Loss/signs/fake_mask', gen_logits_mask.sign())
-                # loss_Dgen_mask = torch.nn.functional.softplus(gen_logits_mask).mean()  # -log(1 - sigmoid(gen_logits))
-                # training_stats.report('Loss/D/loss_gen_mask', loss_Dgen_mask)
-                # loss_Dgen += loss_Dgen_mask
 
             with torch.autograd.profiler.record_function('Dgen_backward'):
                 loss_Dgen.mean().mul(gain).backward()
@@ -287,22 +260,14 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                     (real_img, patch_params) = self.extract_patches(real_img) if self.patch_cfg['enabled'] else (real_img, None)
                     real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dall'])
                     real_logits = self.run_D(real_img_tmp, blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=real_camera_angles)
-                    real_logits, real_logits_mask = real_logits
                     
                     training_stats.report('Loss/scores/real', real_logits)
                     training_stats.report('Loss/signs/real', real_logits.sign())
-
-                    # training_stats.report('Loss/scores/real_mask', real_logits_mask)
-                    # training_stats.report('Loss/signs/real_mask', real_logits_mask.sign())
 
                     loss_Dreal = 0
                     if phase in ['Dmain', 'Dall']:
                         loss_Dreal = torch.nn.functional.softplus(-real_logits).mean() # -log(sigmoid(real_logits))
                         training_stats.report('Loss/D/loss_real_rgb', loss_Dreal)
-                        
-                        # loss_Dreal_mask = torch.nn.functional.softplus(-real_logits_mask).mean()  # -log(sigmoid(real_logits))
-                        # training_stats.report('Loss/D/loss_real_mask', loss_Dreal_mask)
-                        # loss_Dreal += loss_Dreal_mask
                         training_stats.report('Loss/D/loss', loss_Dgen + loss_Dreal)
 
                     loss_Dr1 = 0
@@ -313,19 +278,6 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                         loss_Dr1 = r1_penalty.mean() * (self.r1_gamma / 2)
                         training_stats.report('Loss/D/r1_penalty', r1_penalty)
                         training_stats.report('Loss/D/reg', loss_Dr1)
-
-                        # # Compute R1 regularization for discriminator of Mask image
-                        # with torch.autograd.profiler.record_function('r1_grads'), conv2d_gradfix.no_weight_gradients():
-                        #     r1_grads_mask = \
-                        #         torch.autograd.grad(
-                        #             outputs=[real_logits_mask.sum()], inputs=[real_img_tmp], create_graph=True,
-                        #             only_inputs=True)[0]
-
-                        # r1_penalty_mask = r1_grads_mask.square().sum([1, 2, 3])
-                        # loss_Dr1_mask = r1_penalty_mask.mean() * (self.r1_gamma / 2)
-                        # training_stats.report('Loss/r1_penalty_mask', r1_penalty_mask)
-                        # training_stats.report('Loss/D/reg_mask', loss_Dr1_mask)
-                        # loss_Dr1 += loss_Dr1_mask
 
                 with torch.autograd.profiler.record_function(name + '_backward'):
                     (loss_Dreal + loss_Dr1).mean().mul(gain).backward()

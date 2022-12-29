@@ -135,7 +135,7 @@ def get_initial_rays_trig(batch_size: int, num_steps: int, device, fov: float, r
     rays_d_cam = normalize(torch.stack([x, y, z], dim=2), dim=2) # [compute_batch_size, h * w, 3]
     
     if radius is not None and type(radius) is not float and type(fov) is not float:
-        assert compute_batch_size != 1
+        # assert compute_batch_size != 1
         z_vals = batch_linspace(radius - 0.55, radius + 0.55, num_steps).transpose(0,1).to(device) # [batch_size, num_steps]
         z_vals = z_vals.reshape(batch_size, 1, num_steps, 1).repeat(1, h * w, 1, 1) # [1, h * w, num_steps, 1]
 

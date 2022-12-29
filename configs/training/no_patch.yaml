@@ -1,0 +1,6 @@
+ 
+
+name: no_patch
+patch:
+  enabled: false
+  patch_params_cond: false # Patch parameters pos-enc embeddings dimensionality

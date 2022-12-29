@@ -1,10 +1,10 @@
 defaults:
   - model/base.yaml
-  - model: epigraf
+  - model: canograf
 
   # Import dataset common and overwrite it with the custom one
   - dataset/base.yaml
-  - dataset: ffhq
+  - dataset: compcars
 
   - training/base.yaml
   - training: patch_beta
