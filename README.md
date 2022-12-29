@@ -16,6 +16,10 @@ This repo is built on top of [StyleGAN3](https://github.com/NVlabs/stylegan3), s
 CUDA_VISIBLE_DEVICES=0 python src/infra/launch.py hydra.run.dir=. hydra.job.chdir=True dataset=compcars dataset.resolution=64 num_gpus=1 training.batch_size=4 model=eg3d exp_suffix=dev_1
 ```
 
+* train my model with no_patch & on Atlantis
+```
+CUDA_VISIBLE_DEVICES=0 python src/infra/launch.py hydra.run.dir=. hydra.job.chdir=True dataset=compcars dataset.resolution=64 num_gpus=1 training=no_patch training.batch_size=4 model=canograf dataset.path=/home/anjie/Downloads/CADTextures/CompCars exp_suffix=XXX
+```
 
 * process srn chair
 ```
