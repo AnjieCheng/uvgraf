@@ -10,15 +10,20 @@
 import os
 from glob import glob
 import numpy as np
-import zipfile
+import math
+import random
 import torch
 import dnnlib
-import cv2
+import cv2, json
+from collections import defaultdict
 # import kaolin as kal
 from typing import Tuple
 from tqdm import tqdm 
 import PIL.Image
 from pathlib import Path
+import torchvision.transforms as T
+from torchvision.io import read_image
+from torchvision.transforms import InterpolationMode
 
 try:
     import pyspng
@@ -29,18 +34,34 @@ except ImportError:
 class ImageFolderDataset(torch.utils.data.Dataset):
     def __init__(
             self,
+            path,
             resolution=64,  # Ensure specific resolution, None = highest available.
             split='train',
             limit_dataset_size=None,
             random_seed=0,
             **super_kwargs  # Additional arguments for the Dataset base class.
     ):
-        self._name = "CompCars"
+        self._name = "PhotoShape"
         self.has_labels = False
         self.label_shape = None
-        self.image_path = Path("/home/anjie/Downloads/CADTextures/Photoshape/exemplars")
-        self.mask_path = Path("/home/anjie/Downloads/CADTextures/Photoshape/exemplars_mask")
-        self.mesh_path = Path("/home/anjie/Downloads/CADTextures/Photoshape/shapenet-chairs-manifold-highres")
+        
+        self.image_path = Path(os.path.join(path, 'exemplars'))
+        self.mask_path = Path(os.path.join(path, 'exemplars_mask'))
+        # self.mesh_path = Path(os.path.join(path, 'manifold_combined'))
+        self.pairmeta_path = Path(os.path.join(path, 'metadata', 'pairs.json'))
+        self.shapesmeta_path = Path(os.path.join(path, 'metadata', 'shapes.json'))
+        self.erode = True
+        
+        single_mode = False
+        limit_dataset_size = None
+        if not single_mode:
+            self.items = list(x.stem for x in self.image_path.iterdir())[:limit_dataset_size]
+        else:
+            self.items = ['shape02344_rank02_pair183269']
+            if limit_dataset_size is None:
+                self.items = self.items * 20000
+            else:
+                self.items = self.items * limit_dataset_size
 
         self.real_images_dict = {x.name.split('.')[0]: x for x in self.image_path.iterdir() if x.name.endswith('.jpg') or x.name.endswith('.png')}
         self.real_images_dict = dict(sorted(self.real_images_dict.items()))
@@ -50,13 +71,34 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         self.keys_list = list(self.real_images_dict.keys())
         self.num_images = len(self.keys_list)
 
-        self.sparse_points_list = [y for x in os.walk(self.mesh_path) for y in glob(os.path.join(x[0], '4096_pointcloud.npz'))]
-        self.dense_points_list = [y for x in os.walk(self.mesh_path) for y in glob(os.path.join(x[0], '50000_pointcloud.npz'))]
-        assert len(self.sparse_points_list) == len(self.dense_points_list)
-        self.num_shapes = len(self.sparse_points_list)
+        self.real_images_preloaded, self.masks_preloaded = {}, {}
+
+
+        self.pair_meta, self.all_views, self.shape_meta = self.load_pair_meta(self.pairmeta_path, self.shapesmeta_path)
+        self.source_id_list = [self.shape_meta[shape_meta_key]['source_id'] for shape_meta_key in self.shape_meta.keys()]
+
+        self.dpsr_chair_path = os.path.join(path, 'shapenet_psr', '03001627')
+
+        # split_file = os.path.join(dpsr_chair_path, 'train' + '.lst')
+        # with open(split_file, 'r') as f:
+        #     models_c = f.read().split('\n')
+        # if '' in models_c:
+        #     models_c.remove('')
+        # obj_names = os.listdir(dpsr_chair_path)
+        # self.point_cloud_paths = [os.path.join(dpsr_chair_path, model, 'pointcloud.npz') for model in models_c]
+
+        # obj_names = os.listdir(self.mesh_path)
+        # self.point_cloud_paths = [os.path.join(dpsr_car_path, obj_name,'pointcloud.npz') for obj_name in obj_names]
+        self.num_shapes = len(self.source_id_list)
 
         """
         print("valid img checking...")
+        for point_cloud_path in tqdm(point_cloud_paths):
+            dense_points = np.load(point_cloud_path)
+            surface_points_dense = dense_points['points'].astype(np.float32)
+            surface_normals_dense = dense_points['normals'].astype(np.float32)
+            pointcloud = np.concatenate([surface_points_dense, surface_normals_dense], axis=-1)
+
         for i in tqdm(self.real_images_dict.keys()):
             try:
                 X = PIL.Image.open(self.real_images_dict[i])
@@ -70,7 +112,7 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         self.views_per_sample = 1
 
         print('==> use image path: %s, num images: %d' % (self.image_path, len(self.real_images_dict)))
-        print('==> use mesh path: %s, num meshes: %d' % (self.mesh_path, len(self.sparse_points_list)))
+        # print('==> use mesh path: %s, num meshes: %d' % (self.mesh_path, len(self.point_cloud_paths)))
         self._raw_shape = [len(self.real_images_dict)] + list(self._load_raw_image(0).shape)
 
         self._raw_camera_angles = None
@@ -83,93 +125,118 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         self.__getitem__(0)
 
     def __len__(self):
-        return self._raw_idx.size
+        return len(self.items)
 
     def _open_file(self, fname):
         return open(fname, 'rb')
 
     def __getitem__(self, idx):
         # get_image_and_view
-        total_selections = len(self.real_images_dict.keys()) // 8
-        available_views = get_car_views()
-        view_indices = random.sample(list(range(8)), self.views_per_sample)
-        sampled_view = [available_views[vidx] for vidx in view_indices]
-        image_indices = random.sample(list(range(total_selections)), self.views_per_sample)
-        image_selections = [f'{(iidx * 8 + vidx):05d}' for (iidx, vidx) in zip(image_indices, view_indices)]
-
-        # get camera position
-        azimuth = sampled_view[0]['azimuth'] # + (random.random() - 0.5) * self.camera_noise
-        elevation = sampled_view[0]['elevation'] # + (random.random() - 0.5) * self.camera_noise
-        angles = np.array([azimuth, elevation, 0]).astype(np.float)
-
-        fname = self.real_images_dict[image_selections[0]]
-        fname_mask = self.masks_dict[image_selections[0]]
-
-        with self._open_file(str(fname)) as f:
-            ori_img = np.array(PIL.Image.open(f))
-            # if pyspng is not None and self._file_ext(str(fname)) == '.png':
-            #     ori_img = pyspng.load(f.read())
-            # else:
-            #     ori_img = np.array(PIL.Image.open(f))
-            # PIL.Image.open(f).show()
-
-        with self._open_file(str(fname_mask)) as f:
-            ori_mask = np.array(PIL.Image.open(f))
-
-            # if pyspng is not None and self._file_ext(str(fname_mask)) == '.png':
-            #     ori_mask = pyspng.load(f.read())
-            # PIL.Image.open(f).show()
-            # # else:
-            # # ori_mask = np.array(PIL.Image.open(f))
-
-        img = ori_img[:, :, :3]
-
-        if ori_mask.ndim == 3:
-            mask = (ori_mask[:, :, 0:1] / 255)
-        elif ori_mask.ndim == 2:
-            mask = ori_mask[:, :, None]
+        selected_item = self.items[idx]
+        
+        shape_id = int(selected_item.split('_')[0].split('shape')[1])
+        if shape_id in self.shape_meta:
+            shapenet_id = self.shape_meta[shape_id]['source_id']
         else:
-            raise ValueError(ori_mask.ndim)
+            print(shape_id, "not found")
+            sanity_shape_id = 7719
+            shapenet_id = self.shape_meta[sanity_shape_id]['source_id']
 
-        # print(mask.shape)
+        sampled_view = random.sample(self.all_views, self.views_per_sample)
+        image_selections = self.get_image_selections(shape_id)
 
-        img = cv2.resize(img, (self.img_size, self.img_size), interpolation=cv2.INTER_LINEAR)
-        mask = cv2.resize(mask, (self.img_size, self.img_size), interpolation=cv2.INTER_NEAREST) ########
-
-        background = np.ones_like(img) * 255
-        img = img * (mask[:,:,None] > 0).astype(np.float) + background * (1 - (mask[:,:,None] > 0).astype(np.float))
-
-        img = img.transpose(2, 0, 1) # HWC => CHW
+        c_i, c_v = image_selections[0], sampled_view[0]
+        img = self.get_real_image(self.meta_to_pair(c_i)) * 255
+        mask = self.get_real_mask(self.meta_to_pair(c_i))
+        angles = np.array([c_i['azimuth'], c_i['elevation'], 0, 1.75, c_i['fov']]).astype(np.float)
 
         # Load point cloud here...
-        # sparse_points = np.load(self.sparse_points_list[idx])
-        dense_points = np.load(self.dense_points_list[idx])
+        point_cloud_path = os.path.join(self.dpsr_chair_path, shapenet_id, 'pointcloud.npz')
 
-        # surface_points = sparse_points['points'].astype(np.float32)
-        # surface_normals = sparse_points['normals'].astype(np.float32)
-
-        surface_points_dense = dense_points['points'].astype(np.float32)
+        dense_points = np.load(point_cloud_path)
+        surface_points_dense = (dense_points['points']).astype(np.float32)
         surface_normals_dense = dense_points['normals'].astype(np.float32)
         pointcloud = np.concatenate([surface_points_dense, surface_normals_dense], axis=-1)
 
         return {
-            'image': np.ascontiguousarray(img).astype(np.float),
-            'camera_angles': angles.astype(np.float),
-            'mask': np.ascontiguousarray(mask)[None,:,:].astype(np.float),
-            'pointcloud': np.ascontiguousarray(pointcloud).astype(np.float),
+            'image': np.ascontiguousarray(img).astype(np.float32),
+            'camera_angles': angles.astype(np.float32),
+            'mask': np.ascontiguousarray(mask).astype(np.float32),
+            'pointcloud': np.ascontiguousarray(pointcloud).astype(np.float32),
         }
 
     def get_camera_angles(self, idx):
-        # get view
-        available_views = get_car_views()
-        view_indices = random.sample(list(range(8)), self.views_per_sample)
-        sampled_view = [available_views[vidx] for vidx in view_indices]
-
-        # get camera position
-        azimuth = sampled_view[0]['azimuth']
-        elevation = sampled_view[0]['elevation']
-        angles = np.array([azimuth, elevation, 0]).astype(np.float)
+        selected_item = self.items[idx]
+        shape_id = int(selected_item.split('_')[0].split('shape')[1])
+        image_selections = self.get_image_selections(shape_id)
+        c_i = image_selections[0]
+        angles = np.array([c_i['azimuth'], c_i['elevation'], 0]).astype(np.float)
         return angles
+
+    def load_pair_meta(self, pairmeta_path, shapesmeta_path):
+        loaded_json = json.loads(Path(pairmeta_path).read_text())
+        loaded_json_shape = json.loads(Path(shapesmeta_path).read_text())
+        ret_shapedict = {}
+        ret_dict = defaultdict(list)
+        ret_views = []
+        for k in loaded_json.keys():
+            if self.meta_to_pair(loaded_json[k]) in self.real_images_dict.keys():
+                shape_id = loaded_json[k]['shape_id']
+                ret_dict[shape_id].append(loaded_json[k])
+                ret_views.append(loaded_json[k])
+                ret_shapedict[shape_id] = loaded_json_shape[str(shape_id)]
+        return ret_dict, ret_views, ret_shapedict
+
+    def get_image_selections(self, shape_id):
+        candidates = self.pair_meta[shape_id]
+        if len(candidates) < self.views_per_sample:
+            while len(candidates) < self.views_per_sample:
+                meta = self.pair_meta[random.choice(list(self.pair_meta.keys()))]
+                candidates.extend(meta[:self.views_per_sample - len(candidates)])
+        else:
+            candidates = random.sample(candidates, self.views_per_sample)
+        return candidates
+
+    def get_real_image(self, name):
+        if name not in self.real_images_preloaded.keys():
+            return self.process_real_image(self.real_images_dict[name])
+        else:
+            return self.real_images_preloaded[name]
+
+    def get_real_mask(self, name):
+        if name not in self.masks_preloaded.keys():
+            return self.process_real_mask(self.masks_dict[name])
+        else:
+            return self.masks_preloaded[name]
+
+    def process_real_image(self, path):
+        resize = T.Resize(size=(self.img_size, self.img_size))
+        pad = T.Pad(padding=(100, 100), fill=1)
+        t_image = resize(pad(read_image(str(path)).float() / 127.5 - 1))
+        return t_image.numpy()
+
+    def process_real_mask(self, path):
+        resize = T.Resize(size=(self.img_size, self.img_size))
+        pad = T.Pad(padding=(100, 100), fill=0)
+        if self.erode:
+            eroded_mask = self.erode_mask(read_image(str(path)))
+        else:
+            eroded_mask = read_image(str(path))
+        t_mask = resize(pad((eroded_mask > 0).float()))
+        return t_mask.numpy()
+
+    @staticmethod
+    def erode_mask(mask):
+        import cv2 as cv
+        mask = mask.squeeze(0).numpy().astype(np.uint8)
+        kernel_size = 3
+        element = cv.getStructuringElement(cv.MORPH_ELLIPSE, (2 * kernel_size + 1, 2 * kernel_size + 1), (kernel_size, kernel_size))
+        mask = cv.erode(mask, element)
+        return torch.from_numpy(mask).unsqueeze(0)
+
+    @staticmethod
+    def meta_to_pair(c):
+        return f'shape{c["shape_id"]:05d}_rank{(c["rank"] - 1):02d}_pair{c["id"]}'
 
 
     def _get_raw_camera_angles(self):
