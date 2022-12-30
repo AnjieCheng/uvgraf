@@ -392,10 +392,13 @@ class SphereTemplate(nn.Module):
         sdfs = sdfs_flat.reshape(points.shape[0], points.shape[1])[...,None]
         return sdfs
 
-class FoldSDF(nn.Module):
-    def __init__(self, feat_dim, ckpt_path=None, ignore_keys=[]):
-        super().__init__()
+import os
+from pathlib import Path
 
+class FoldSDF(nn.Module):
+    def __init__(self, feat_dim, cfg, ckpt_path=None, ignore_keys=[], name=None, preload_data=True):
+        super().__init__()
+        self.cfg = cfg
         self.feat_dim = feat_dim
 
         self.template = SphereTemplate()
@@ -406,7 +409,63 @@ class FoldSDF(nn.Module):
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+            self.is_preloaded = False
 
+    def preload(self, batch_size, device):
+        if not self.is_preloaded:
+            if 'compcars' in self.cfg.dataset.name:
+                # load paths
+                dpsr_car_path = os.path.join(self.cfg.dataset.path, 'shapenet_psr', '02958343')
+                texturify_obj_names = os.listdir(Path(os.path.join(self.cfg.dataset.path, 'manifold_combined')))
+                self.point_cloud_paths = [os.path.join(dpsr_car_path, obj_name,'pointcloud.npz') for obj_name in texturify_obj_names]
+                self.num_shapes = len(self.point_cloud_paths)
+
+                # load raw points to np
+                all_points_normals = []
+                for idx in range(self.num_shapes):
+                    dense_points = np.load(self.point_cloud_paths[idx])
+                    surface_points_dense = (dense_points['points']).astype(np.float32)
+                    surface_normals_dense = dense_points['normals'].astype(np.float32)
+                    pointcloud = np.concatenate([surface_points_dense, surface_normals_dense], axis=-1)
+                    all_points_normals.append(pointcloud)
+                all_points_normals = np.stack(all_points_normals, axis=0)
+
+
+                head = 0
+                max_batch = 16
+                batch_p_2d_all, folding_points_all, sdf_grid_pred_all, sdf_grid_gdt_all = [], [], [], []
+                while head < self.num_shapes:
+                    points_subset = torch.from_numpy(all_points_normals[head : min(head + max_batch, self.num_shapes)]).to(device)
+                    preload_batch_size, num_samples_subset = points_subset.shape[0], points_subset.shape[1]
+
+                    with torch.no_grad():
+                        batch_p_2d, folding_points, folding_normals, sdf_grid_pred = self.forward(points_subset, level=5)
+                        # sdf_grid_gdt = self.forward_gdt(points_subset)
+                        # sdf_grid_gdt = sdf_grid_gdt.view(preload_batch_size, 1, *self.dpsr.res)
+                        sdf_grid_pred = sdf_grid_pred.view(preload_batch_size, 1, *self.dpsr.res)
+
+                    batch_p_2d_all.append(batch_p_2d.cpu().numpy())
+                    folding_points_all.append(folding_points.cpu().numpy())
+                    sdf_grid_pred_all.append(sdf_grid_pred.cpu().numpy())
+                    del batch_p_2d
+                    del folding_points
+                    del sdf_grid_pred
+                    # sdf_grid_gdt_all.append(sdf_grid_gdt.cpu())
+
+                    head += max_batch
+                    print("Done 8")
+
+                self.batch_p_2d_all = np.concatenate(batch_p_2d_all, axis=0) # (1291, 10242, 3)
+                self.folding_points_all = np.concatenate(folding_points_all, axis=0) # (1291, 10242, 3)
+                self.sdf_grid_pred_all = np.concatenate(sdf_grid_pred_all, axis=0)
+                # sdf_grid_gdt_all = torch.cat(sdf_grid_gdt_all, dim=0) # (1291, 1, 128, 128, 128)
+                self.is_preloaded = True
+        
+        sub_idc = np.random.choice(self.num_shapes, batch_size)
+        rt_batch_p_2d = torch.from_numpy(self.batch_p_2d_all[sub_idc]).to(device)
+        rt_folding_points = torch.from_numpy(self.folding_points_all[sub_idc]).to(device)
+        rt_sdf_grid_pred = torch.from_numpy(self.sdf_grid_pred_all[sub_idc]).to(device)
+        return rt_batch_p_2d, rt_folding_points, rt_sdf_grid_pred
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -468,7 +527,11 @@ class FoldSDF(nn.Module):
         surface_points, surface_normals = points[..., 0:3], points[..., 3:6]
 
         surface_points_dimension = (surface_points.amax(dim=-2, keepdim=True) - surface_points.amin(dim=-2, keepdim=True)).amax(dim=-1, keepdim=True)
-        surface_points = surface_points # / surface_points_dimension * 0.7
+        surface_points = surface_points * 0.95 # / surface_points_dimension * 0.7
+
+        # surface_points = surface_points[:,:,torch.LongTensor([2,1,0])]
+        # surface_normals = surface_normals [:,:,torch.LongTensor([2,1,0])]
+
         dpsr_gdt = torch.tanh(self.dpsr(torch.clamp((surface_points + 0.5), 0.0, 0.99), surface_normals))
         return dpsr_gdt.float()
 
@@ -507,7 +570,7 @@ class FoldSDF(nn.Module):
         batch_p_2d = batch_p_2d.reshape(batch_size, multiplication*n_points, 3)
 
         coords_dimension = (coords.amax(dim=-2, keepdim=True) - coords.amin(dim=-2, keepdim=True)).amax(dim=-1, keepdim=True)
-        coords = coords * 0.95 # / coords_dimension * 0.7
+        coords = coords * 0.97 # / coords_dimension * 0.7
 
         sdf_grid = torch.tanh(self.dpsr(torch.clamp((coords+0.5), 0.0, 0.99).detach(), normals))
 

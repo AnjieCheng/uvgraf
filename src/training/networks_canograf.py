@@ -51,7 +51,7 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     alpha = 1 / beta
     sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
 
-    K = 8
+    K = 1
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)
     dis = dis.detach()
     indices = indices.detach()
@@ -70,19 +70,19 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
 
     # sphere_uv_f = get_feat_from_triplane(folding_grid, tex_x, scale=0.3).mean(dim=1)
 
-    fused_tex_feature = torch.sum(batched_index_select(uv_x, 1, indices).view(batch_size, num_points, K, 32) * weights[..., None], dim=-2)
+    # fused_tex_feature = torch.sum(batched_index_select(uv_x, 1, indices).view(batch_size, num_points, K, 32) * weights[..., None], dim=-2)
     # fused_tex_normal = torch.sum(batched_index_select(folding_normals, 1, indices).view(batch_size, num_points, K, 3) * weights[..., None], dim=-2)
 
     # volume rgbs
     # fused_tex_feature = get_feat_from_triplane(coords_normed, tex_x, scale=None).mean(dim=1)
-    sdf_grid_grad = torch.gradient(sdf_grid.squeeze(1))
-    normal_grid = torch.stack([sdf_grid_grad[0], sdf_grid_grad[1], sdf_grid_grad[2]], dim=1)
-    normals = F.grid_sample(normal_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 3)
-    rgbs = texture_mlp(fused_tex_feature, normals.detach(), sdfs.detach()) # [batch_size, num_points, out_dim]
+    # sdf_grid_grad = torch.gradient(sdf_grid.squeeze(1))
+    # normal_grid = torch.stack([sdf_grid_grad[0], sdf_grid_grad[1], sdf_grid_grad[2]], dim=1)
+    # normals = F.grid_sample(normal_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 3)
+    # rgbs = texture_mlp(fused_tex_feature, normals.detach(), sdfs.detach()) # [batch_size, num_points, out_dim]
     # import pdb; pdb.set_trace()
 
     # normed_bp2d = torch.clip((folding_grid+0.5), 0, 1) # normalize color to 0-1
-    # rgbs = rgbs * 0 + (batched_index_select(normed_bp2d, 1, indices).view(batch_size, num_points, 3))
+    rgbs = (batched_index_select(uv_x, 1, indices).view(batch_size, num_points, 3))
     
     # import pdb; pdb.set_trace()
     # ff = plotly_gen_points(folding_coords[0], color=sphere_to_color(normed_bp2d[0].cpu().numpy(), 0.5), rt_html=False, png_path=None)
@@ -237,13 +237,24 @@ class SynthesisNetwork(torch.nn.Module):
         self.img_resolution = img_resolution
         self.img_channels = img_channels
 
+        if 'photoshape' in self.cfg.dataset.name:
+            foldsdf_name = 'photoshape'
+            foldsdf_ckpt_path = "../../pretrain/foldsdf_chair.ckpt"
+        elif 'compcars' in self.cfg.dataset.name:
+            foldsdf_name = 'compcars'
+            foldsdf_ckpt_path = "../../pretrain/foldsdf_car.ckpt"
+        else:
+            raise NotImplementedError
+
         self.fold_sdf = FoldSDF(feat_dim=256, 
-                                ckpt_path="../../pretrain/foldsdf_car.ckpt",
-                                ignore_keys=['dpsr'])
+                                ckpt_path=foldsdf_ckpt_path,
+                                ignore_keys=['dpsr'],
+                                name=foldsdf_name,
+                                cfg=self.cfg)
 
         # rgb
         if self.cfg.texture.type == "cips":
-            self.texture_decoder = CIPSres(style_dim=256, out_dim=32)
+            self.texture_decoder = CIPSres(style_dim=256, out_dim=3)
         elif self.cfg.texture.type == "triplane":
             assert TypeError
             texture_decoder_out_channels = 32 * 3
@@ -264,7 +275,7 @@ class SynthesisNetwork(torch.nn.Module):
         self.num_ws = self.texture_decoder.num_ws
         self.nerf_noise_std = 0.0
         self.train_resolution = self.cfg.patch.resolution if self.cfg.patch.enabled else self.img_resolution
-        self.test_resolution = 32 # self.img_resolution
+        self.test_resolution = self.img_resolution
 
         if self.cfg.bg_model.type in (None, "plane"):
             self.bg_model = None
@@ -305,11 +316,14 @@ class SynthesisNetwork(torch.nn.Module):
 
         self.fold_sdf.eval()
         with torch.no_grad():
-            points = points.to(geo_ws.device)
-
-            batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points, level=foldsdf_level)
-            # sdf_grid = self.fold_sdf.forward_gdt(points)
-            sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
+            if self.training:
+                batch_p_2d, folding_points, sdf_grid = self.fold_sdf.preload(batch_size, geo_ws.device)
+                folding_normals = None
+            else:
+                points = points.to(geo_ws.device)
+                batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points, level=foldsdf_level)
+                sdf_grid = self.fold_sdf.forward_gdt(points)
+                sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
 
         # import pdb; pdb.set_trace()
 

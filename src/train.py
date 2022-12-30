@@ -114,7 +114,11 @@ def launch_training(c, outdir, dry_run):
 
 def init_dataset(cfg: DictConfig):
     try:
-        dataset_kwargs = dnnlib.EasyDict(class_name='src.training.dataset_compcars.ImageFolderDataset', path=cfg.dataset.path, resolution=cfg.dataset.resolution, use_labels=True, max_size=None, xflip=False)
+        if "photoshape" in cfg.dataset.name:
+            class_name='src.training.dataset_photoshape.ImageFolderDataset'
+        elif "compcars" in cfg.dataset.name:
+            class_name='src.training.dataset_compcars.ImageFolderDataset'
+        dataset_kwargs = dnnlib.EasyDict(class_name=class_name, path=cfg.dataset.path, resolution=cfg.dataset.resolution, use_labels=True, max_size=None, xflip=False)
         dataset = dnnlib.util.construct_class_by_name(**dataset_kwargs) # Subclass of training.dataset.Dataset.
         dataset_kwargs.resolution = dataset.resolution # Be explicit about resolution.
         dataset_kwargs.use_labels = dataset.has_labels # Be explicit about labels.

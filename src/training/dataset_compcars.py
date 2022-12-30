@@ -134,15 +134,15 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         # surface_points = sparse_points['points'].astype(np.float32)
         # surface_normals = sparse_points['normals'].astype(np.float32)
 
-        surface_points_dense = (dense_points['points'] * 0.95).astype(np.float32)
+        surface_points_dense = (dense_points['points']).astype(np.float32)
         surface_normals_dense = dense_points['normals'].astype(np.float32)
         pointcloud = np.concatenate([surface_points_dense, surface_normals_dense], axis=-1)
 
         return {
-            'image': np.ascontiguousarray(img).astype(np.float32),
-            'camera_angles': angles.astype(np.float32),
-            'mask': np.ascontiguousarray(mask).astype(np.float32),
-            'pointcloud': np.ascontiguousarray(pointcloud).astype(np.float32),
+            'image': np.ascontiguousarray(img).astype(np.float32), # (3, 64, 64)
+            'camera_angles': angles.astype(np.float32), # (5,)
+            'mask': np.ascontiguousarray(mask).astype(np.float32), # (1, 64, 64)
+            'pointcloud': np.ascontiguousarray(pointcloud).astype(np.float32), # (100000, 6)
         }
 
     def process_real_image(self, path):

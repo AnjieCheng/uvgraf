@@ -1,5 +1,5 @@
 name: photoshape_${dataset.resolution}
-path: /home/anjie/Downloads/CADTextures/Photoshape
+path: /data2/anjie/Data/CADTextures/Photoshape
 sampling:
   fov: 35 # 35
   ray_start: 1.15 # 1.15
