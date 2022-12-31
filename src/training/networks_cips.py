@@ -154,7 +154,7 @@ class CIPSres(nn.Module):
                                                activation=activation))
             in_channels = out_channels
 
-        # self.to_rgb_last = ToRGB(in_channels, style_dim, upsample=False)
+        self.to_rgb_last = ToRGB(in_channels, style_dim, upsample=False)
 
         self.style_dim = style_dim
 
@@ -203,7 +203,7 @@ class CIPSres(nn.Module):
         for con in self.linears:
             out = con(out, latent)
 
-        # out = self.to_rgb_last(out, latent)
+        out = self.to_rgb_last(out, latent)
         out = out.transpose(1,2).squeeze(3)
 
         if return_latents:

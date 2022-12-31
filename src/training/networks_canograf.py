@@ -254,7 +254,7 @@ class SynthesisNetwork(torch.nn.Module):
 
         # rgb
         if self.cfg.texture.type == "cips":
-            self.texture_decoder = CIPSres(style_dim=z_dim, out_dim=3)
+            self.texture_decoder = CIPSres(style_dim=z_dim, out_dim=32)
         elif self.cfg.texture.type == "triplane":
             assert TypeError
             texture_decoder_out_channels = 32 * 3
