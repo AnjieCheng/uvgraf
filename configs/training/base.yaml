@@ -2,7 +2,7 @@
 
 batch_size: 72 # Total batch size
 test_batch_gpu: 4 # Batch size at test time
-gamma: 0.1 # R1 regularization weight (auto)
+gamma: auto # R1 regularization weight (auto)
 
 # Optional features.
 use_labels: false # Train conditional model
@@ -27,7 +27,7 @@ image_snap: 5 # How often to save samples? (# ticks)
 seed: 0 # Random seed
 fp32: false # Disable mixed-precision
 nobench: false # Disable cuDNN benchmarking
-workers: 3 # DataLoader worker processes
+workers: 6 # DataLoader worker processes
 dry_run: false # Print training options and exit
 
 # Default parameters for patch-wise training (in case it is enabled)
@@ -44,18 +44,18 @@ patch:
   mbstd_group_size: ${model.discriminator.mbstd_group_size}
 
 augment:
-  mode: ada # Augmentation mode. One of ["noaug", "ada", "fixed"]
+  mode: noaug # Augmentation mode. One of ["noaug", "ada", "fixed"]
   # Augment probabilities for different transformation types
   probs:
     xflip: 0.0
-    rotate90: 1.0
-    xint: 1.0
-    scale: 1.0
-    rotate: 1.0
-    xfrac: 1.0
-    aniso: 1.0
-    brightness: 1.0
-    contrast: 1.0
-    lumaflip: 1.0
-    hue: 1.0
-    saturation: 1.0
+    rotate90: 0.0
+    xint: 0.0
+    scale: 0.0
+    rotate: 0.0
+    xfrac: 0.0
+    aniso: 0.0
+    brightness: 0.0
+    contrast: 0.0
+    lumaflip: 0.0
+    hue: 0.0
+    saturation: 0.0
