@@ -125,7 +125,7 @@ def training_loop(
 
     # # Resume from existing geo pickle.
     resume_geo_pkl = None
-    resume_geo_pkl = "/home/anjie/Downloads/network-snapshot-002000.pkl"
+    # resume_geo_pkl = "/home/anjie/Downloads/network-snapshot-002000.pkl"
     if not resume_geo_pkl is None:
         print(f'Resuming from "{resume_geo_pkl}"')
         with dnnlib.util.open_url(resume_geo_pkl) as f:
