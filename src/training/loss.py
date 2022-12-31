@@ -187,26 +187,26 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
     def run_G(self, z, camera_angles, points, camera_angles_cond=None, update_emas=False, verbose=False):
         geo_z = z[...,:self.G.geo_dim]
         tex_z = z[...,-self.G.tex_dim:]
-        geo_ws = self.G.geo_mapping(geo_z, camera_angles=camera_angles_cond, update_emas=update_emas)
-        tex_ws = self.G.tex_mapping(tex_z, camera_angles=camera_angles_cond, update_emas=update_emas)
-        if self.style_mixing_prob > 0:
-            with torch.autograd.profiler.record_function('style_mixing'):
-                geo_cutoff = torch.empty([], dtype=torch.int64, device=geo_ws.device).random_(1, geo_ws.shape[1])
-                geo_cutoff = torch.where(torch.rand([], device=geo_ws.device) < self.style_mixing_prob, geo_cutoff, torch.full_like(geo_cutoff, geo_ws.shape[1]))
-                geo_ws[:, geo_cutoff:] = self.G.geo_mapping(z=torch.randn_like(geo_z), camera_angles=camera_angles_cond, update_emas=False)[:, geo_cutoff:]
-                tex_cutoff = torch.empty([], dtype=torch.int64, device=geo_ws.device).random_(1, tex_ws.shape[1])
-                tex_cutoff = torch.where(torch.rand([], device=geo_ws.device) < self.style_mixing_prob, tex_cutoff, torch.full_like(tex_cutoff, tex_ws.shape[1]))
-                tex_ws[:, tex_cutoff:] = self.G.tex_mapping(z=torch.randn_like(tex_z), camera_angles=camera_angles_cond, update_emas=False)[:, tex_cutoff:]
+        # geo_ws = self.G.geo_mapping(geo_z, camera_angles=camera_angles_cond, update_emas=update_emas)
+        # tex_ws = self.G.tex_mapping(tex_z, camera_angles=camera_angles_cond, update_emas=update_emas)
+        # if self.style_mixing_prob > 0:
+        #     with torch.autograd.profiler.record_function('style_mixing'):
+        #         geo_cutoff = torch.empty([], dtype=torch.int64, device=geo_ws.device).random_(1, geo_ws.shape[1])
+        #         geo_cutoff = torch.where(torch.rand([], device=geo_ws.device) < self.style_mixing_prob, geo_cutoff, torch.full_like(geo_cutoff, geo_ws.shape[1]))
+        #         geo_ws[:, geo_cutoff:] = self.G.geo_mapping(z=torch.randn_like(geo_z), camera_angles=camera_angles_cond, update_emas=False)[:, geo_cutoff:]
+        #         tex_cutoff = torch.empty([], dtype=torch.int64, device=geo_ws.device).random_(1, tex_ws.shape[1])
+        #         tex_cutoff = torch.where(torch.rand([], device=geo_ws.device) < self.style_mixing_prob, tex_cutoff, torch.full_like(tex_cutoff, tex_ws.shape[1]))
+        #         tex_ws[:, tex_cutoff:] = self.G.tex_mapping(z=torch.randn_like(tex_z), camera_angles=camera_angles_cond, update_emas=False)[:, tex_cutoff:]
         
         patch_params = sample_patch_params(len(z), self.patch_cfg, device=z.device) if self.patch_cfg['enabled'] else {}
         patch_kwargs = dict(patch_params=patch_params) if self.patch_cfg['enabled'] else dict(patch_params=None)
 
         if verbose:
-            img, G_info = self.G.synthesis(geo_ws, tex_ws, camera_angles, points=points, update_emas=update_emas, verbose=True, **patch_kwargs)
-            return img, [geo_ws, tex_ws], patch_params, G_info
+            img, G_info = self.G.synthesis(tex_z, camera_angles, points=points, update_emas=update_emas, verbose=True, **patch_kwargs)
+            return img, [tex_z], patch_params, G_info
         else:
-            img = self.G.synthesis(geo_ws, tex_ws, camera_angles, points=points, update_emas=update_emas, verbose=False, **patch_kwargs)
-            return img, [geo_ws, tex_ws], patch_params
+            img = self.G.synthesis(tex_z, camera_angles, points=points, update_emas=update_emas, verbose=False, **patch_kwargs)
+            return img, [tex_z], patch_params
 
     def accumulate_gradients(self, phase, real_img, real_camera_angles, gen_z, gen_camera_angles, gen_camera_angles_cond, gain, cur_nimg, points):
         with torch.autograd.set_detect_anomaly(True):

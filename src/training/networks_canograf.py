@@ -226,7 +226,7 @@ class SynthesisBlocksSequence(torch.nn.Module):
 class SynthesisNetwork(torch.nn.Module):
     def __init__(self,
         cfg: DictConfig,            # Main config
-        w_dim,                      # Intermediate latent (W) dimensionality.
+        z_dim,                      # Intermediate latent (W) dimensionality.
         img_resolution,             # Output resolution.
         img_channels,               # Number of output color channels.
         num_fp16_res = 4,           # Number of FP16 res blocks for the upsampler
@@ -254,7 +254,7 @@ class SynthesisNetwork(torch.nn.Module):
 
         # rgb
         if self.cfg.texture.type == "cips":
-            self.texture_decoder = CIPSres(style_dim=256, out_dim=3)
+            self.texture_decoder = CIPSres(style_dim=z_dim, out_dim=3)
         elif self.cfg.texture.type == "triplane":
             assert TypeError
             texture_decoder_out_channels = 32 * 3
@@ -289,7 +289,7 @@ class SynthesisNetwork(torch.nn.Module):
         self.nerf_noise_std = linear_schedule(cur_kimg, self.cfg.nerf_noise_std_init, 0.0, self.cfg.nerf_noise_kimg_growth)
 
 
-    def forward(self, geo_ws, tex_ws, camera_angles: torch.Tensor, points: torch.Tensor=None, patch_params: Dict=None, max_batch_res: int=128, return_depth: bool=False, ignore_bg: bool=False, bg_only: bool=False, fov=None, verbose: bool=False, return_tex: bool=False, **block_kwargs):
+    def forward(self, tex_z, camera_angles: torch.Tensor, points: torch.Tensor=None, patch_params: Dict=None, max_batch_res: int=128, return_depth: bool=False, ignore_bg: bool=False, bg_only: bool=False, fov=None, verbose: bool=False, return_tex: bool=False, **block_kwargs):
         """
         geo_ws: [batch_size, num_ws, w_dim] --- latent codes
         tex_ws: [batch_size, num_ws, w_dim] --- latent codes
@@ -301,7 +301,7 @@ class SynthesisNetwork(torch.nn.Module):
             # max_batch_res = 32
             foldsdf_level = 5
         else:
-            foldsdf_level = 4
+            foldsdf_level = 5
 
         if camera_angles.size(1) == 3:
             radius = self.cfg.dataset.sampling.radius
@@ -310,17 +310,20 @@ class SynthesisNetwork(torch.nn.Module):
             fov = camera_angles[:,4]
             camera_angles = camera_angles[:,:3]
 
-        batch_size = geo_ws.shape[0]
+        batch_size = tex_z.shape[0]
         h = w = (self.train_resolution if self.training else self.test_resolution)
         fov = self.cfg.dataset.sampling.fov if fov is None else fov # [1] or [batch_size]
 
         self.fold_sdf.eval()
         with torch.no_grad():
             if self.training:
-                batch_p_2d, folding_points, sdf_grid = self.fold_sdf.preload(batch_size, geo_ws.device)
+                batch_p_2d, folding_points, sdf_grid_pred, sdf_grid_gdt = self.fold_sdf.preload(batch_size, tex_z.device)
+                sdf_grid_pred = sdf_grid_pred.view(batch_size, 1, *self.fold_sdf.dpsr.res)
+                sdf_grid_gdt = sdf_grid_gdt.view(batch_size, 1, *self.fold_sdf.dpsr.res)
+                sdf_grid = sdf_grid_pred
                 folding_normals = None
             else:
-                points = points.to(geo_ws.device)
+                points = points.to(tex_z.device)
                 batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points, level=foldsdf_level)
                 sdf_grid = self.fold_sdf.forward_gdt(points)
                 sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
@@ -328,7 +331,7 @@ class SynthesisNetwork(torch.nn.Module):
         # import pdb; pdb.set_trace()
 
         if self.cfg.texture.type == "cips":
-            uv_feats = self.texture_decoder(batch_p_2d, tex_ws[:, 0]) # [batch_size, feat_dim, tp_h, tp_w]
+            uv_feats = self.texture_decoder(batch_p_2d, tex_z) # [batch_size, feat_dim, tp_h, tp_w]
 
         num_steps = self.cfg.num_ray_steps
         rgb_sigma_out_dim = 4
@@ -336,7 +339,7 @@ class SynthesisNetwork(torch.nn.Module):
         nerf_noise_std = self.nerf_noise_std if self.training else 0.0
 
         z_vals, rays_d_cam = get_initial_rays_trig(
-            batch_size, num_steps, resolution=(h, w), device=geo_ws.device, ray_start=self.cfg.dataset.sampling.ray_start,
+            batch_size, num_steps, resolution=(h, w), device=tex_z.device, ray_start=self.cfg.dataset.sampling.ray_start,
             ray_end=self.cfg.dataset.sampling.ray_end, fov=fov, patch_params=patch_params, radius=radius)
         c2w = compute_cam2world_matrix(camera_angles, radius) # [batch_size, 4, 4]
         points_world, z_vals, ray_d_world, ray_o_world = transform_points(z_vals=z_vals, ray_directions=rays_d_cam, c2w=c2w) # [batch_size, h * w, num_steps, 1], [?]
@@ -447,11 +450,11 @@ class Generator(torch.nn.Module):
         self.tex_dim = z_dim // 2
         self.img_resolution = img_resolution
         self.img_channels = img_channels
-        self.synthesis = SynthesisNetwork(cfg=cfg, w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
-        self.geo_num_ws = self.synthesis.num_ws + 1
-        self.tex_num_ws = self.synthesis.num_ws
-        self.geo_mapping = MappingNetwork(z_dim=self.geo_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.geo_num_ws, **mapping_kwargs)
-        self.tex_mapping = MappingNetwork(z_dim=self.tex_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.tex_num_ws, **mapping_kwargs)
+        self.synthesis = SynthesisNetwork(cfg=cfg, z_dim=self.tex_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
+        # self.geo_num_ws = self.synthesis.num_ws + 1
+        # self.tex_num_ws = self.synthesis.num_ws
+        # self.geo_mapping = MappingNetwork(z_dim=self.geo_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.geo_num_ws, **mapping_kwargs)
+        # self.tex_mapping = MappingNetwork(z_dim=self.tex_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.tex_num_ws, **mapping_kwargs)
 
     def progressive_update(self, cur_kimg: float):
         self.synthesis.progressive_update(cur_kimg)
@@ -459,7 +462,7 @@ class Generator(torch.nn.Module):
     def forward(self, z, p, camera_angles, c=None, camera_angles_cond=None, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
         geo_z = z[...,:self.geo_dim]
         tex_z = z[...,-self.tex_dim:]
-        geo_ws = self.geo_mapping(geo_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
-        tex_ws = self.tex_mapping(tex_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
-        img = self.synthesis(geo_ws, tex_ws, points=p, camera_angles=camera_angles, update_emas=update_emas, **synthesis_kwargs)
+        # geo_ws = self.geo_mapping(geo_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+        # tex_ws = self.tex_mapping(tex_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+        img = self.synthesis(tex_z, points=p, camera_angles=camera_angles, update_emas=update_emas, **synthesis_kwargs)
         return img

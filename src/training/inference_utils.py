@@ -69,12 +69,12 @@ def generate_videos(G: torch.nn.Module, z: torch.Tensor, p: torch.Tensor, model_
     if model_name in ['canograf', 'dis3d', 'eg3d']:
         geo_z = z[...,:G.geo_dim]
         tex_z = z[...,-G.tex_dim:]
-        geo_ws = G.geo_mapping(geo_z) # [num_videos, num_ws, w_dim]
-        tex_ws = G.tex_mapping(tex_z) # [num_videos, num_ws, w_dim]
+        # geo_ws = G.geo_mapping(geo_z) # [num_videos, num_ws, w_dim]
+        # tex_ws = G.tex_mapping(tex_z) # [num_videos, num_ws, w_dim]
         if return_tex:
-            images, textures = generate_trajectory_cano(vis_cfg, G, geo_ws, tex_ws, angles[:, :2], p=p, fovs=fovs, return_tex=True, verbose=False) # [num_frames, num_videos, c, h, w]
+            images, textures = generate_trajectory_cano(vis_cfg, G, tex_z, angles[:, :2], p=p, fovs=fovs, return_tex=True, verbose=False) # [num_frames, num_videos, c, h, w]
         else:
-            images, _ = generate_trajectory_cano(vis_cfg, G, geo_ws, tex_ws, angles[:, :2], p=p, fovs=fovs, return_tex=False, verbose=False) # [num_frames, num_videos, c, h, w]
+            images, _ = generate_trajectory_cano(vis_cfg, G, tex_z, angles[:, :2], p=p, fovs=fovs, return_tex=False, verbose=False) # [num_frames, num_videos, c, h, w]
     else:
         ws = G.mapping(z=z) # [num_videos, num_ws, w_dim]
         images = generate_trajectory(vis_cfg, G, ws, angles[:, :2], fovs=fovs, verbose=False) # [num_frames, num_videos, c, h, w]
@@ -131,25 +131,26 @@ def generate_trajectory(cfg, G, ws: torch.Tensor, trajectory: List, fovs: torch.
 
     return images
 
-def generate_trajectory_cano(cfg, G, geo_ws: torch.Tensor, tex_ws: torch.Tensor, trajectory: List, p: torch.Tensor, fovs: torch.Tensor=None, return_tex: bool=False, **generate_kwargs):
+def generate_trajectory_cano(cfg, G, tex_z: torch.Tensor, trajectory: List, p: torch.Tensor, fovs: torch.Tensor=None, return_tex: bool=False, **generate_kwargs):
     """Produces frames for all `ws` for each trajectory step"""
     assert isinstance(trajectory, np.ndarray)
-    num_cameras, num_samples = len(trajectory), len(geo_ws) # [1], [1]
-    trajectory = torch.from_numpy(trajectory).float().to(geo_ws.device) # [num_steps, 2]
+    num_cameras, num_samples = len(trajectory), len(p) # [1], [1]
+    trajectory = torch.from_numpy(trajectory).float().to(tex_z.device) # [num_steps, 2]
     angles = torch.cat([trajectory, torch.zeros_like(trajectory[:, [0]])], dim=1) # [num_cameras, 3]
-    angles = angles.repeat_interleave(len(geo_ws), dim=0) # [num_cameras * num_samples, 3]
-    fovs = None if fovs is None else torch.from_numpy(fovs).float().to(geo_ws.device).repeat_interleave(len(geo_ws), dim=0) # None or [num_cameras * num_samples]
-    geo_ws = geo_ws.repeat(num_cameras, 1, 1) # [num_samples * num_cameras, num_ws, w_dim]
-    tex_ws = tex_ws.repeat(num_cameras, 1, 1) # [num_samples * num_cameras, num_ws, w_dim]
+    angles = angles.repeat_interleave(len(p), dim=0) # [num_cameras * num_samples, 3]
+    fovs = None if fovs is None else torch.from_numpy(fovs).float().to(tex_z.device).repeat_interleave(len(p), dim=0) # None or [num_cameras * num_samples]
+    # geo_ws = geo_ws.repeat(num_cameras, 1, 1) # [num_samples * num_cameras, num_ws, w_dim]
+    # tex_ws = tex_ws.repeat(num_cameras, 1, 1) # [num_samples * num_cameras, num_ws, w_dim]
     p = p.repeat(num_cameras, 1, 1) # [num_samples * num_cameras, num_points, 6(coord+normal)]
+    tex_z = tex_z.repeat(num_cameras, 1) # [num_samples * num_cameras, z_dim]
 
     if return_tex:
-        images, textures = generate_cano(cfg, G, geo_ws=geo_ws, tex_ws=tex_ws, angles=angles, p=p, fovs=fovs, return_tex=True, **generate_kwargs) # [num_cameras * num_samples, c, h, w]
+        images, textures = generate_cano(cfg, G, tex_z=tex_z, angles=angles, p=p, fovs=fovs, return_tex=True, **generate_kwargs) # [num_cameras * num_samples, c, h, w]
         textures = textures.reshape(num_cameras, num_samples, *textures.shape[1:]) # [num_cameras, num_samples, c, h, w]
         images = images.reshape(num_cameras, num_samples, *images.shape[1:]) # [num_cameras, num_samples, c, h, w]
         return images, textures
     else:
-        images, _ = generate_cano(cfg, G, geo_ws=geo_ws, tex_ws=tex_ws, angles=angles, p=p, fovs=fovs, return_tex=False, **generate_kwargs) # [num_cameras * num_samples, c, h, w]
+        images, _ = generate_cano(cfg, G, tex_z=tex_z, angles=angles, p=p, fovs=fovs, return_tex=False, **generate_kwargs) # [num_cameras * num_samples, c, h, w]
         images = images.reshape(num_cameras, num_samples, *images.shape[1:]) # [num_cameras, num_samples, c, h, w]
         return images, None
 
@@ -171,25 +172,26 @@ def generate(cfg: DictConfig, G, ws: torch.Tensor, angles: torch.Tensor, fovs: t
         frames.extend(frame)
     return torch.stack(frames) # [num_frames, c, h, w]
 
-def generate_cano(cfg: DictConfig, G, geo_ws: torch.Tensor, tex_ws: torch.Tensor, angles: torch.Tensor, p: torch.Tensor, fovs: torch.Tensor=None, verbose: bool=True, return_tex=False, **synthesis_kwargs):
-    assert len(geo_ws) == len(angles), f"Wrong shapes: {geo_ws.shape} vs {angles.shape}"
+def generate_cano(cfg: DictConfig, G, tex_z: torch.Tensor, angles: torch.Tensor, p: torch.Tensor, fovs: torch.Tensor=None, verbose: bool=True, return_tex=False, **synthesis_kwargs):
+    # assert len(geo_ws) == len(angles), f"Wrong shapes: {geo_ws.shape} vs {angles.shape}"
     max_batch_res_kwargs = {} if cfg.max_batch_res is None else dict(max_batch_res=cfg.max_batch_res)
     synthesis_kwargs = dict(return_depth=False, noise_mode='const', **max_batch_res_kwargs, **synthesis_kwargs)
     tex_frames = []
     frames = []
-    batch_indices = range(0, (len(geo_ws) + cfg.batch_size - 1) // cfg.batch_size)
+
+    batch_indices = range(0, (len(angles) + cfg.batch_size - 1) // cfg.batch_size)
     batch_indices = tqdm(batch_indices, desc='Generating') if verbose else batch_indices  
     for batch_idx in batch_indices:
         curr_slice = slice(batch_idx * cfg.batch_size, (batch_idx + 1) * cfg.batch_size)
-        curr_geo_ws, curr_tex_ws, curr_angles, curr_p = geo_ws[curr_slice], tex_ws[curr_slice], angles[curr_slice], p[curr_slice] # [batch_size, num_ws, w_dim], [batch_size, 3]
+        curr_tex_z, curr_angles, curr_p = tex_z[curr_slice], angles[curr_slice], p[curr_slice] # [batch_size, num_ws, w_dim], [batch_size, 3]
         curr_fovs = G.cfg.dataset.sampling.fov if fovs is None else fovs[curr_slice] # [1] or [batch_size]
         if return_tex:
-            frame, tex_frame = G.synthesis(curr_geo_ws, curr_tex_ws, points=curr_p, camera_angles=curr_angles, fov=curr_fovs, return_tex=True, **synthesis_kwargs) # [batch_size, c, h, w]
+            frame, tex_frame = G.synthesis(curr_tex_z, points=curr_p, camera_angles=curr_angles, fov=curr_fovs, return_tex=True, **synthesis_kwargs) # [batch_size, c, h, w]
             # tex_frame = tex_frame ** (1 / 2.2)
             tex_frames.extend(tex_frame.clamp(0, 1).cpu())
             # print(tex_frame.cpu().shape)
         else:
-            frame = G.synthesis(curr_geo_ws, curr_tex_ws, points=curr_p, camera_angles=curr_angles, fov=curr_fovs, return_tex=False, **synthesis_kwargs) # [batch_size, c, h, w]
+            frame = G.synthesis(curr_tex_z, points=curr_p, camera_angles=curr_angles, fov=curr_fovs, return_tex=False, **synthesis_kwargs) # [batch_size, c, h, w]
         frame = frame.clamp(-1, 1).cpu() * 0.5 + 0.5 # [batch_size, c, h, w]
         frames.extend(frame)
         
