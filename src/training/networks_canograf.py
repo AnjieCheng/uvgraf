@@ -320,7 +320,7 @@ class SynthesisNetwork(torch.nn.Module):
                 batch_p_2d, folding_points, sdf_grid_pred, sdf_grid_gdt = self.fold_sdf.preload(batch_size, tex_z.device)
                 sdf_grid_pred = sdf_grid_pred.view(batch_size, 1, *self.fold_sdf.dpsr.res)
                 sdf_grid_gdt = sdf_grid_gdt.view(batch_size, 1, *self.fold_sdf.dpsr.res)
-                sdf_grid = sdf_grid_pred
+                sdf_grid = sdf_grid_gdt
                 folding_normals = None
             else:
                 points = points.to(tex_z.device)
