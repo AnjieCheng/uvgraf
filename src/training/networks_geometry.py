@@ -440,7 +440,7 @@ class FoldSDF(nn.Module):
                     preload_batch_size, num_samples_subset = points_subset.shape[0], points_subset.shape[1]
 
                     with torch.no_grad():
-                        batch_p_2d, folding_points, folding_normals = self.forward(points_subset, level=5, fast_forward=True)
+                        batch_p_2d, folding_points, folding_normals = self.forward(points_subset, level=4, fast_forward=True)
                         # sdf_grid_gdt = self.forward_gdt(points_subset)
                         # sdf_grid_gdt = sdf_grid_gdt.view(preload_batch_size, 1, *self.dpsr.res)
                         # sdf_grid_pred = sdf_grid_pred.view(preload_batch_size, 1, *self.dpsr.res)

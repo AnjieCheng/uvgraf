@@ -299,9 +299,9 @@ class SynthesisNetwork(torch.nn.Module):
         # misc.assert_shape(camera_angles, [len(geo_ws), 3])
         if not self.training:
             # max_batch_res = 32
-            foldsdf_level = 5
+            foldsdf_level = 4
         else:
-            foldsdf_level = 5
+            foldsdf_level = 4
 
         if camera_angles.size(1) == 3:
             radius = self.cfg.dataset.sampling.radius
@@ -319,13 +319,13 @@ class SynthesisNetwork(torch.nn.Module):
             if self.training:
                 batch_p_2d, folding_points, sdf_grid_pred, sdf_grid_gdt = self.fold_sdf.preload(batch_size, tex_z.device)
                 sdf_grid_pred = sdf_grid_pred.view(batch_size, 1, *self.fold_sdf.dpsr.res)
-                sdf_grid_gdt = sdf_grid_gdt.view(batch_size, 1, *self.fold_sdf.dpsr.res)
-                sdf_grid = sdf_grid_gdt
+                # sdf_grid_gdt = sdf_grid_gdt.view(batch_size, 1, *self.fold_sdf.dpsr.res)
+                sdf_grid = sdf_grid_pred
                 folding_normals = None
             else:
                 points = points.to(tex_z.device)
                 batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points, level=foldsdf_level)
-                sdf_grid = self.fold_sdf.forward_gdt(points)
+                # sdf_grid = self.fold_sdf.forward_gdt(points)
                 sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
 
         # import pdb; pdb.set_trace()
