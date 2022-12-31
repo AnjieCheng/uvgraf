@@ -51,7 +51,7 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     alpha = 1 / beta
     sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
 
-    K = 1
+    K = 4
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)
     dis = dis.detach()
     indices = indices.detach()
@@ -82,7 +82,8 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     # import pdb; pdb.set_trace()
 
     # normed_bp2d = torch.clip((folding_grid+0.5), 0, 1) # normalize color to 0-1
-    rgbs = (batched_index_select(uv_x, 1, indices).view(batch_size, num_points, 3))
+    # rgbs = (batched_index_select(uv_x, 1, indices).view(batch_size, num_points, 3))
+    rgbs = torch.sum(batched_index_select(uv_x, 1, indices).view(batch_size, num_points, K, 3) * weights[..., None], dim=-2)
     
     # import pdb; pdb.set_trace()
     # ff = plotly_gen_points(folding_coords[0], color=sphere_to_color(normed_bp2d[0].cpu().numpy(), 0.5), rt_html=False, png_path=None)
