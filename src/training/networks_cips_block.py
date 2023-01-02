@@ -542,9 +542,9 @@ class SinActivation(nn.Module):
 
 
 class LFF(nn.Module):
-    def __init__(self, hidden_size, ):
+    def __init__(self, hidden_size, dim=3):
         super(LFF, self).__init__()
-        self.ffm = ConLinear(3, hidden_size, is_first=True)
+        self.ffm = ConLinear(dim, hidden_size, is_first=True)
         self.activation = SinActivation()
 
     def forward(self, x):

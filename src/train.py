@@ -165,7 +165,7 @@ def main(cfg: DictConfig):
     c.D_kwargs = dnnlib.EasyDict(class_name='training.networks_discriminator.Discriminator', cfg=cfg.model.discriminator, block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
     c.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=list(cfg.model.generator.optim.betas), eps=1e-8)
     c.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', betas=list(cfg.model.discriminator.optim.betas), eps=1e-8)
-    if cfg.model.name in ['canograf', 'dis3d', 'eg3d']:
+    if cfg.model.name in ['canograf', 'dis3d', 'eg3d', 'cips2d']:
         loss_class_name = 'training.loss.CanonicalStyleGAN2Loss'
     else:
         loss_class_name = 'training.loss.StyleGAN2Loss'
@@ -221,7 +221,7 @@ def main(cfg: DictConfig):
         c.G_kwargs.class_name = 'training.networks_stylegan2.Generator'
         c.loss_kwargs.style_mixing_prob = 0.9 # Enable style mixing regularization.
         c.G_kwargs.fused_modconv_default = 'inference_only' # Speed up training by using regular convolutions instead of grouped convolutions.
-    elif cfg.model.name in ['epigraf', 'canograf', 'dis3d', 'eg3d']:
+    elif cfg.model.name in ['epigraf', 'canograf', 'dis3d', 'eg3d', 'cips2d']:
         if cfg.model.name == 'canograf':
             print("using canograf")
             c.G_kwargs.class_name = 'training.networks_canograf.Generator'
@@ -231,6 +231,9 @@ def main(cfg: DictConfig):
         elif cfg.model.name == 'eg3d':
             print("using eg3d")
             c.G_kwargs.class_name = 'training.networks_eg3d.Generator'
+        elif cfg.model.name == 'cips2d':
+            print("using cips2d")
+            c.G_kwargs.class_name = 'training.networks_cips2d.Generator'
         else:
             c.G_kwargs.class_name = 'training.networks_epigraf.Generator'
         if cfg.model.generator.backbone == 'stylegan2':

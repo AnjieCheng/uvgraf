@@ -66,7 +66,7 @@ def generate_videos(G: torch.nn.Module, z: torch.Tensor, p: torch.Tensor, model_
     camera_cfg = dnnlib.EasyDict({'name': 'front_circle', 'num_frames': 32, 'yaw_diff': 0.5, 'pitch_diff': 0.3, 'use_zoom': True})
     vis_cfg = dnnlib.EasyDict({'max_batch_res': 64, 'batch_size': 8})
     angles, fovs = generate_camera_angles(camera_cfg, default_fov=G.cfg.dataset.sampling.fov) # [num_frames, 3], [num_frames]
-    if model_name in ['canograf', 'dis3d', 'eg3d']:
+    if model_name in ['canograf', 'dis3d', 'eg3d', 'cips2d']:
         geo_z = z[...,:G.geo_dim]
         tex_z = z[...,-G.tex_dim:]
         # geo_ws = G.geo_mapping(geo_z) # [num_videos, num_ws, w_dim]
