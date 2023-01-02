@@ -108,7 +108,7 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         total_selections = len(self.real_images_dict.keys()) // 8
         available_views = get_car_views()
         view_indices = random.sample(list(range(8)), self.views_per_sample)
-        # view_indices = [0]
+        view_indices = [0]
         sampled_view = [available_views[vidx] for vidx in view_indices]
         image_indices = random.sample(list(range(total_selections)), self.views_per_sample)
         # view_indices = [0]

@@ -125,11 +125,11 @@ class CIPSres(nn.Module):
         demodulate = True
         self.demodulate = demodulate
         self.lff = LFF(int(hidden_size))
-        self.emb = ConstantInput3D(hidden_size, size=8)
+        self.emb = ConstantInput3D(hidden_size, size=2)
         self.num_ws = 1
 
         self.channels = {
-            0: 512,
+            0: 256,
             1: 512,
             2: 512,
             3: 512,
@@ -140,7 +140,7 @@ class CIPSres(nn.Module):
         }
 
         self.linears = nn.ModuleList()
-        in_channels = int(self.channels[0])
+        in_channels = 512 # int(self.channels[0])
         multiplier = 2
         self.linears.append(StyledConv(int(multiplier*hidden_size), in_channels, 1, style_dim, demodulate=demodulate,
                                        activation=activation))
@@ -198,7 +198,8 @@ class CIPSres(nn.Module):
             padding_mode='border', mode='bilinear',
         ).squeeze(4)
 
-        out = torch.cat([x, emb], 1)
+        out = torch.cat([x, emb*0], 1)
+        # out = x
 
         for con in self.linears:
             out = con(out, latent)

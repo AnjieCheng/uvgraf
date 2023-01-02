@@ -34,7 +34,7 @@ from src.training.vis_helper import *
 @misc.profiled_function
 def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_world: torch.Tensor, 
                                 sdf_grid: torch.Tensor, folding_grid: torch.Tensor, folding_coords: torch.Tensor, folding_normals: torch.Tensor,
-                                texture_mlp: Callable, scale: float=1.0,  rt_sdf: bool=False, rt_radiance: bool=True) -> torch.Tensor:
+                                texture_mlp: Callable, scale: float=1.0,  rt_sdf: bool=False, rt_radiance: bool=True, beta: torch.Tensor=None) -> torch.Tensor:
     # geo
     batch_size, num_uv, uv_feat_dim = uv_x.shape
     num_points = coords.shape[1]
@@ -47,7 +47,7 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     
     # sigmas = torch.sigmoid(-sdfs / 0.005) / 0.005
 
-    beta = 0.005
+    # beta = 0.005
     alpha = 1 / beta
     sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
 
@@ -273,6 +273,8 @@ class SynthesisNetwork(torch.nn.Module):
 
         self.texture_mlp = TextureMLP(self.cfg, out_dim=3)
 
+        self.beta = 0.005 # nn.Parameter(torch.tensor(0.005))
+
         self.num_ws = self.texture_decoder.num_ws
         self.nerf_noise_std = 0.0
         self.train_resolution = self.cfg.patch.resolution if self.cfg.patch.enabled else self.img_resolution
@@ -334,6 +336,8 @@ class SynthesisNetwork(torch.nn.Module):
         if self.cfg.texture.type == "cips":
             uv_feats = self.texture_decoder(batch_p_2d, tex_z) # [batch_size, feat_dim, tp_h, tp_w]
 
+            # uv_feats = torch.clip((batch_p_2d+0.5), 0, 1) # normalize color to 0-1
+
         num_steps = self.cfg.num_ray_steps
         rgb_sigma_out_dim = 4
         white_back_end_idx = self.img_channels if self.cfg.dataset.white_back else 0
@@ -352,6 +356,7 @@ class SynthesisNetwork(torch.nn.Module):
             texture_mlp=self.texture_mlp, uv_x=uv_feats, 
             scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
             folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals, sdf_grid=sdf_grid,
+            beta=self.beta
         ) # [batch_size, h * w * num_steps, num_feats]
         coarse_output = coarse_output.view(batch_size, h * w, num_steps, rgb_sigma_out_dim) # [batch_size, h * w, num_steps, num_feats] | rgbs, sigmas, f_pts, b_pts
         coarse_rgb_sigma = coarse_output[...,:rgb_sigma_out_dim]
@@ -386,6 +391,7 @@ class SynthesisNetwork(torch.nn.Module):
             texture_mlp=self.texture_mlp, uv_x=uv_feats, 
             scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
             folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals, sdf_grid=sdf_grid,
+            beta=self.beta
         ) # [batch_size, h * w * num_steps, num_feats]
         fine_output = fine_output.view(batch_size, h * w, num_steps, rgb_sigma_out_dim) # [batch_size, h * w, num_steps, num_feats]
 
