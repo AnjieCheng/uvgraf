@@ -326,15 +326,13 @@ class SynthesisNetwork(torch.nn.Module):
 
         self.image_decoder = CIPS2D(size=self.img_resolution, hidden_size=256, style_dim=256, n_mlp=4, activation="None", channel_multiplier=2)
 
-    # def forward(self, ws, camera_angles=None, patch_params=None, **block_kwargs):
     def forward(self, tex_z, camera_angles: torch.Tensor, points: torch.Tensor=None, patch_params: Dict=None, max_batch_res: int=128, return_depth: bool=False, ignore_bg: bool=False, bg_only: bool=False, fov=None, verbose: bool=False, return_tex: bool=False, **block_kwargs):
         _ = camera_angles # For compatibility
 
         batch_size = tex_z.shape[0]
         coords = convert_to_coord_format(batch_size, self.img_resolution, self.img_resolution, integer_values=False).to(tex_z.device)
-        noise = mixing_noise(batch_size, 256, 0., tex_z.device)
-
-        import pdb; pdb.set_trace()
+        # noise = mixing_noise(batch_size, 256, 0., tex_z.device)
+        noise = [tex_z]
 
         img = self.image_decoder(coords, noise)
 
