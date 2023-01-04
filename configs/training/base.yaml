@@ -23,7 +23,7 @@ kimg: 50000 # Total training duration
 tick: 1 # How often to print progress
 val_freq: 100 # How often to compute metrics
 snap: 250 # How often to save snapshots (# ticks)
-image_snap: 1 # How often to save samples? (# ticks)
+image_snap: 4 # How often to save samples? (# ticks)
 seed: 0 # Random seed
 fp32: false # Disable mixed-precision
 nobench: false # Disable cuDNN benchmarking
