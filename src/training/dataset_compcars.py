@@ -111,8 +111,8 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         view_indices = [0]
         sampled_view = [available_views[vidx] for vidx in view_indices]
         image_indices = random.sample(list(range(total_selections)), self.views_per_sample)
-        # view_indices = [0]
-        # image_indices = [0]
+        view_indices = [0]
+        image_indices = [1]
         image_selections = [f'{(iidx * 8 + vidx):05d}' for (iidx, vidx) in zip(image_indices, view_indices)]
 
         # get camera position
@@ -132,6 +132,7 @@ class ImageFolderDataset(torch.utils.data.Dataset):
 
         # Load point cloud here...
         # sparse_points = np.load(self.sparse_points_list[idx])
+        idx = 0
         dense_points = np.load(self.point_cloud_paths[idx])
 
         # surface_points = sparse_points['points'].astype(np.float32)
@@ -140,6 +141,8 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         surface_points_dense = (dense_points['points']).astype(np.float32)
         surface_normals_dense = dense_points['normals'].astype(np.float32)
         pointcloud = np.concatenate([surface_points_dense, surface_normals_dense], axis=-1)
+
+        # print("///", angles.astype(np.float32), "///")
 
         return {
             'image': np.ascontiguousarray(img).astype(np.float32), # (3, 64, 64)
@@ -177,15 +180,18 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         return (1 - (t_mask[:1, :, :]).float()).numpy()
 
     def get_camera_angles(self, idx):
-        # get view
+        # get_image_and_view
         available_views = get_car_views()
         view_indices = random.sample(list(range(8)), self.views_per_sample)
+        view_indices = [0]
         sampled_view = [available_views[vidx] for vidx in view_indices]
 
         # get camera position
-        azimuth = sampled_view[0]['azimuth']
-        elevation = sampled_view[0]['elevation']
-        angles = np.array([azimuth, elevation, 0]).astype(np.float)
+        azimuth = sampled_view[0]['azimuth'] # + (random.random() - 0.5) * self.camera_noise
+        elevation = sampled_view[0]['elevation'] # + (random.random() - 0.5) * self.camera_noise
+        cam_dist = sampled_view[0]['cam_dist'] # 
+        fov = sampled_view[0]['fov'] # 
+        angles = np.array([azimuth, elevation, 0, cam_dist, fov]).astype(np.float)
         return angles
 
     def _get_raw_camera_angles(self):
@@ -258,4 +264,4 @@ def get_car_views():
                        0, 0,
                        -random.random() * math.pi / 28, -random.random() * math.pi / 28,
                        -random.random() * math.pi / 28, -random.random() * math.pi / 28,]
-    return [{'azimuth': a + an + math.pi, 'elevation': e + en, 'fov': f, 'cam_dist': cd} for a, an, e, en, cd, f in zip(azimuth, azimuth_noise, elevation, elevation_noise, camera_distance, fov)]
+    return [{'azimuth': a + an + math.pi, 'elevation': e, 'fov': f, 'cam_dist': cd} for a, an, e, en, cd, f in zip(azimuth, azimuth_noise, elevation, elevation_noise, camera_distance, fov)]

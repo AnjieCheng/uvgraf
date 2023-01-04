@@ -14,7 +14,7 @@ from pytorch3d.ops import knn_points
 from src.training.networks_geometry import FoldSDF
 from src.training.networks_stylegan2 import SynthesisBlock
 from src.training.networks_stylegan3 import SynthesisNetwork as SG3SynthesisNetwork
-from src.training.networks_cips import CIPSres
+from src.training.networks_cips import CIPSres, CIPS2D
 from src.training.networks_inr_gan import SynthesisNetwork as INRSynthesisNetwork
 from src.training.layers import (
     FullyConnectedLayer,
@@ -35,21 +35,42 @@ from src.training.vis_helper import *
 def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_world: torch.Tensor, 
                                 sdf_grid: torch.Tensor, folding_grid: torch.Tensor, folding_coords: torch.Tensor, folding_normals: torch.Tensor,
                                 texture_mlp: Callable, scale: float=1.0,  rt_sdf: bool=False, rt_radiance: bool=True, beta: torch.Tensor=None) -> torch.Tensor:
+    """
+    batch_size, raw_feat_dim, h, w = uv_x.shape
+    num_points = coords.shape[1]
+    feat_dim = raw_feat_dim // 3
+    uv_x = uv_x.view(batch_size * 3, feat_dim, h, w) # [batch_size * 3, feat_dim, h, w]
+    # coords = coords / scale # [batch_size, num_points, 3]
+    coords_ = coords / 0.85
+    coords_2d = torch.stack([
+        coords_[..., [0, 1]], # x/y plane
+        coords_[..., [0, 2]], # x/z plane
+        coords_[..., [1, 2]], # y/z plane
+    ], dim=1) # [batch_size, 3, num_points, 2]
+    coords_2d = coords_2d.view(batch_size * 3, 1, num_points, 2) # [batch_size * 3, 1, num_points, 2]
+    assert ((coords_2d.min().item() >= -1.0 - 1e-8) and (coords_2d.max().item() <= 1.0 + 1e-8))
+    rgbs_f = F.grid_sample(uv_x, grid=coords_2d, mode='bilinear', align_corners=True).view(batch_size, 3, num_points, feat_dim) # [batch_size, 3, feat_dim, num_points]
+    rgbs_f = rgbs_f.mean(1)
+    rgbs = texture_mlp(rgbs_f)
+    # x = x.permute(0, 1, 3, 2) # [batch_size, 3, num_points, feat_dim]
+    """
     # geo
     batch_size, num_uv, uv_feat_dim = uv_x.shape
     num_points = coords.shape[1]
-
+    
     # sdf_grid = sdf_grid.permute(0,1,4,3,2)
 
     coords_normed = coords / 0.5
     # sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
     sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
     
-    # sigmas = torch.sigmoid(-sdfs / 0.005) / 0.005
-
     # beta = 0.005
     alpha = 1 / beta
     sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
+
+    # return torch.cat([rgbs, sigmas.detach()], dim=-1) 
+    # sigmas = torch.sigmoid(-sdfs / 0.005) / 0.005
+
 
     K = 4
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)
@@ -83,7 +104,8 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
 
     # normed_bp2d = torch.clip((folding_grid+0.5), 0, 1) # normalize color to 0-1
     # rgbs = (batched_index_select(uv_x, 1, indices).view(batch_size, num_points, 3))
-    rgbs = torch.sum(batched_index_select(uv_x, 1, indices).view(batch_size, num_points, K, 3) * weights[..., None], dim=-2)
+    rgbs_f = torch.sum(batched_index_select(uv_x, 1, indices).view(batch_size, num_points, K, 32) * weights[..., None], dim=-2)
+    rgbs = texture_mlp(rgbs_f) # [batch_size, num_points, out_dim]
     
     # import pdb; pdb.set_trace()
     # ff = plotly_gen_points(folding_coords[0], color=sphere_to_color(normed_bp2d[0].cpu().numpy(), 0.5), rt_html=False, png_path=None)
@@ -112,7 +134,7 @@ class TextureMLP(nn.Module):
             else:
                 self.pos_enc = None
 
-            backbone_input_dim = 32 + 3 + 1
+            backbone_input_dim = 32 # + 3 + 1
             backbone_out_dim = (self.cfg.texture.mlp.hid_dim if has_view_cond else self.out_dim)
             self.dims = [backbone_input_dim] + [self.cfg.texture.mlp.hid_dim] * (self.cfg.texture.mlp.n_layers - 1) + [backbone_out_dim] # (n_hid_layers + 2)
             activations = ['lrelu'] * (len(self.dims) - 2) + ['linear']
@@ -254,13 +276,18 @@ class SynthesisNetwork(torch.nn.Module):
                                 cfg=self.cfg)
 
         # rgb
+        self.cfg.texture.type = "cips" 
         if self.cfg.texture.type == "cips":
             self.texture_decoder = CIPSres(style_dim=z_dim, out_dim=32)
+            # self.texture_decoder = CIPS2D(size=self.img_resolution, hidden_size=256, style_dim=256, n_mlp=4, activation="None", channel_multiplier=2)
+        elif self.cfg.texture.type == 'raw_planes':
+            self.texture_decoder = nn.Parameter(torch.randn(1, 3 * 32, 128, 128))
+            self.texture_decoder.num_ws = 1
         elif self.cfg.texture.type == "triplane":
             assert TypeError
             texture_decoder_out_channels = 32 * 3
             self.texture_decoder = SynthesisBlocksSequence(
-                w_dim=w_dim,
+                w_dim=64,
                 in_resolution=0,
                 out_resolution=128,
                 in_channels=0,
@@ -273,7 +300,7 @@ class SynthesisNetwork(torch.nn.Module):
 
         self.texture_mlp = TextureMLP(self.cfg, out_dim=3)
 
-        self.beta = 0.005 # nn.Parameter(torch.tensor(0.005))
+        self.beta = 0.005 # 0.005 # nn.Parameter(torch.tensor(0.005))
 
         self.num_ws = self.texture_decoder.num_ws
         self.nerf_noise_std = 0.0
@@ -309,6 +336,7 @@ class SynthesisNetwork(torch.nn.Module):
         if camera_angles.size(1) == 3:
             radius = self.cfg.dataset.sampling.radius
         elif camera_angles.size(1) == 5:
+            camera_angles = camera_angles.float()
             radius = camera_angles[:,3]
             fov = camera_angles[:,4]
             camera_angles = camera_angles[:,:3]
@@ -317,32 +345,77 @@ class SynthesisNetwork(torch.nn.Module):
         h = w = (self.train_resolution if self.training else self.test_resolution)
         fov = self.cfg.dataset.sampling.fov if fov is None else fov # [1] or [batch_size]
 
-        self.fold_sdf.eval()
-        with torch.no_grad():
-            if self.training:
-                batch_p_2d, folding_points, sdf_grid_pred, sdf_grid_gdt = self.fold_sdf.preload(batch_size, tex_z.device)
-                sdf_grid_pred = sdf_grid_pred.view(batch_size, 1, *self.fold_sdf.dpsr.res)
-                # sdf_grid_gdt = sdf_grid_gdt.view(batch_size, 1, *self.fold_sdf.dpsr.res)
-                sdf_grid = sdf_grid_pred
-                folding_normals = None
-            else:
+        # import pdb; pdb.set_trace()
+
+        if self.cfg.texture.type == "cips":
+
+            self.fold_sdf.eval()
+            with torch.no_grad():
+                if False and self.training:
+                    batch_p_2d, folding_points, sdf_grid_pred, sdf_grid_gdt = self.fold_sdf.preload(batch_size, tex_z.device)
+                    sdf_grid_pred = sdf_grid_pred.view(batch_size, 1, *self.fold_sdf.dpsr.res)
+                    # sdf_grid_gdt = sdf_grid_gdt.view(batch_size, 1, *self.fold_sdf.dpsr.res)
+                    sdf_grid = sdf_grid_pred
+                    folding_normals = None
+                else:
+                    points = points.to(tex_z.device)
+                    batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points, level=foldsdf_level)
+                    # sdf_grid = self.fold_sdf.forward_gdt(points)
+                    sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
+
+            # num_of_grids = batch_p_2d.shape[1]
+            # sphere_samples_normed = F.normalize(batch_p_2d, dim=-1)
+            # sphere_u = (0.5 + torch.atan2(sphere_samples_normed[..., 0], sphere_samples_normed[..., 2]) / (2 * math.pi))
+            # sphere_v = (0.5 - torch.asin(sphere_samples_normed[..., 1]) / math.pi)
+            # sphere_uv = torch.cat([sphere_u[:,:,None],sphere_v[:,:,None]], dim=2).view(batch_size, 1, num_of_grids, 2)
+            # sphere_uv = ((sphere_uv * 2) - 1) # .view(batch_size, 2, num_of_grids, 1) # [batch_size, 2, h, w]
+            # uv_feats = self.texture_decoder(sphere_uv, [tex_z]).squeeze(3).transpose(1,2) # [batch_size, feat_dim, tp_h, tp_w]
+            uv_feats = self.texture_decoder(batch_p_2d, [tex_z]) # .squeeze(3).transpose(1,2) # [batch_size, feat_dim, tp_h, tp_w]
+
+            # coords = convert_to_coord_format(batch_size, h, w, integer_values=False).to(tex_z.device)
+            # uv_feats_2D = self.texture_decoder(coords, [tex_z])
+            # uv_feats = F.grid_sample(uv_feats_2D, grid=sphere_uv, mode='bilinear', align_corners=True).view(batch_size, num_of_grids, 3)
+            
+            # mask = torch.zeros_like(img)[:,0:1,:,:]
+
+            # import pdb; pdb.set_trace()
+
+            # if verbose:
+            #     info = {}
+            #     return torch.cat([img, mask], dim=1), info
+            # else:
+            #     if return_tex:
+            #         return torch.cat([img, mask], dim=1), None
+            #     else:
+            #         return torch.cat([img, mask], dim=1)
+
+            # rg = torch.clip((sphere_uv/2+0.5), 0, 1).view(batch_size, num_of_grids, 2)
+            # b = torch.zeros([batch_size, num_of_grids, 1]).to(rg.device)
+            # uv_feats = uv_feats*0 + torch.cat([b, rg], dim=2) # normalize color to 0-1
+            # uv_feats = self.texture_decoder(batch_p_2d, tex_z) # [batch_size, feat_dim, tp_h, tp_w]
+
+            # uv_feats = torch.clip((batch_p_2d+0.5), 0, 1) # normalize color to 0-1
+
+        elif self.cfg.texture.type == 'raw_planes':
+
+            self.fold_sdf.eval()
+            with torch.no_grad():
                 points = points.to(tex_z.device)
                 batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points, level=foldsdf_level)
                 # sdf_grid = self.fold_sdf.forward_gdt(points)
                 sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
 
-        # import pdb; pdb.set_trace()
-
-        if self.cfg.texture.type == "cips":
-            uv_feats = self.texture_decoder(batch_p_2d, tex_z) # [batch_size, feat_dim, tp_h, tp_w]
-
-            # uv_feats = torch.clip((batch_p_2d+0.5), 0, 1) # normalize color to 0-1
+            uv_feats = self.texture_decoder.repeat(batch_size, 1, 1, 1)
 
         num_steps = self.cfg.num_ray_steps
         rgb_sigma_out_dim = 4
         white_back_end_idx = self.img_channels if self.cfg.dataset.white_back else 0
         nerf_noise_std = self.nerf_noise_std if self.training else 0.0
 
+        # if self.training:
+        #     print(camera_angles)
+        #     print(fov)
+        #     print(radius)
         z_vals, rays_d_cam = get_initial_rays_trig(
             batch_size, num_steps, resolution=(h, w), device=tex_z.device, ray_start=self.cfg.dataset.sampling.ray_start,
             ray_end=self.cfg.dataset.sampling.ray_end, fov=fov, patch_params=patch_params, radius=radius)
@@ -434,6 +507,15 @@ class SynthesisNetwork(torch.nn.Module):
                 return img
 
 #----------------------------------------------------------------------------
+
+def convert_to_coord_format(b, h, w, device='cpu', integer_values=False):
+    if integer_values:
+        x_channel = torch.arange(w, dtype=torch.float, device=device).view(1, 1, 1, -1).repeat(b, 1, w, 1)
+        y_channel = torch.arange(h, dtype=torch.float, device=device).view(1, 1, -1, 1).repeat(b, 1, 1, h)
+    else:
+        x_channel = torch.linspace(-1, 1, w, device=device).view(1, 1, 1, -1).repeat(b, 1, w, 1)
+        y_channel = torch.linspace(-1, 1, h, device=device).view(1, 1, -1, 1).repeat(b, 1, 1, h)
+    return torch.cat((x_channel, y_channel), dim=1)
 
 @persistence.persistent_class
 class Generator(torch.nn.Module):

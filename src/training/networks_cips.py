@@ -9,6 +9,7 @@ import math
 import torch
 from torch import nn
 import torch.nn.functional as F
+from src.training.training_utils import *
 
 from src.training.networks_cips_block import ConstantInput3D, ConstantInput, LFF, StyledConv, ToRGB, PixelNorm, EqualLinear, StyledResBlock
 
@@ -125,7 +126,7 @@ class CIPSres(nn.Module):
         demodulate = True
         self.demodulate = demodulate
         self.lff = LFF(int(hidden_size))
-        self.emb = ConstantInput3D(hidden_size, size=2)
+        self.emb = ConstantInput3D(hidden_size, size=16)
         self.num_ws = 1
 
         self.channels = {
@@ -154,7 +155,7 @@ class CIPSres(nn.Module):
                                                activation=activation))
             in_channels = out_channels
 
-        self.to_rgb_last = ToRGB(in_channels, style_dim, upsample=False)
+        # self.to_rgb_last = ToRGB(in_channels, style_dim, upsample=False)
 
         self.style_dim = style_dim
 
@@ -178,7 +179,7 @@ class CIPSres(nn.Module):
                 input_is_latent=False,
                 ):
 
-        # latent = latent[0]
+        latent = latent[0]
         coords_normed = coords / 0.5
         coords_normed = coords_normed.transpose(1,2)[:,:,:,None]
 
@@ -198,14 +199,16 @@ class CIPSres(nn.Module):
             padding_mode='border', mode='bilinear',
         ).squeeze(4)
 
-        out = torch.cat([x, emb*0], 1)
+        out = torch.cat([x, emb], 1)
         # out = x
 
         for con in self.linears:
             out = con(out, latent)
 
-        out = self.to_rgb_last(out, latent)
+        # out = self.to_rgb_last(out, latent)
         out = out.transpose(1,2).squeeze(3)
+
+        # out = out*0 + torch.clip((coords+0.5), 0, 1) # normalize color to 0-1
 
         if return_latents:
             return out, latent
@@ -223,6 +226,7 @@ class CIPS2D(nn.Module):
         self.demodulate = demodulate
         self.lff = LFF(int(hidden_size), dim=2)
         self.emb = ConstantInput(hidden_size, size=size)
+        self.num_ws = 1
 
         self.channels = {
             0: 512,

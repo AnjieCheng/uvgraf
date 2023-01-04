@@ -237,7 +237,7 @@ def training_loop(
             vis.grid_size, images, vis.camera_angles, masks, vis.points = setup_snapshot_image_grid(training_set=training_set, cfg=cfg)
             save_image_grid(images[:,:3,...], os.path.join(run_dir, 'reals.jpg'), drange=[0,255], grid_size=vis.grid_size)
             save_image_grid(masks[:,0:1,...], os.path.join(run_dir, 'reals_mask.jpg'), drange=[0,1], grid_size=vis.grid_size)
-            vis.grid_z = torch.randn([images.shape[0], G.z_dim], device=device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, z_dim])
+            vis.grid_z = (torch.randn([images.shape[0], G.z_dim], device=device)*0).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, z_dim])
             vis.points = torch.from_numpy(vis.points).to(device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, c_dim])
             vis.grid_camera_angles = torch.from_numpy(vis.camera_angles).to(device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, 3])
             save_filename = 'fakes_init.jpg'
@@ -302,7 +302,7 @@ def training_loop(
             phase_surface_points = surface_points.split(batch_gpu)
             phase_real_img = torch.cat([real_img, real_mask], dim=1).split(batch_gpu)
             phase_real_camera_angles = phase_real_camera_angles.to(device).split(batch_gpu) # (batch_size // batch_gpu, [batch_gpu, 3])
-            all_gen_z = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
+            all_gen_z = (torch.randn([len(phases) * batch_size, G.z_dim], device=device)*0)
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
             gen_cond_sample_idx = [np.random.randint(len(training_set)) for _ in range(len(phases) * batch_size)] # [num_phases * batch_size]
             if cfg.dataset.sampling.dist == 'custom':
@@ -310,7 +310,6 @@ def training_loop(
                 all_gen_camera_angles = torch.from_numpy(np.stack(all_gen_camera_angles)).pin_memory().to(device) # [N, 3]
             else:
                 all_gen_camera_angles = sample_camera_angles(cfg=cfg.dataset.sampling, batch_size=len(gen_cond_sample_idx), device=device) # [N, 3]
-
             # Preparing GPC data (camera conditioning for G)
             # Shift the values in X% of random places by 1 to spoof the generator
             # Does not work for some reason :|
@@ -329,7 +328,6 @@ def training_loop(
                 continue
             if phase.start_event is not None:
                 phase.start_event.record(torch.cuda.current_stream(device))
-
             # Accumulate gradients.
             phase.opt.zero_grad(set_to_none=True)
             phase.module.requires_grad_(True)

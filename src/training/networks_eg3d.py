@@ -305,6 +305,7 @@ class SynthesisNetwork(torch.nn.Module):
     def __init__(self,
         cfg: DictConfig,            # Main config
         w_dim,                      # Intermediate latent (W) dimensionality.
+        c_dim,
         img_resolution,             # Output resolution.
         img_channels,               # Number of output color channels.
         num_fp16_res = 4,           # Number of FP16 res blocks for the upsampler
@@ -315,9 +316,20 @@ class SynthesisNetwork(torch.nn.Module):
         self.img_resolution = img_resolution
         self.img_channels = img_channels
 
+        if 'photoshape' in self.cfg.dataset.name:
+            foldsdf_name = 'photoshape'
+            foldsdf_ckpt_path = "../../pretrain/foldsdf_chair.ckpt"
+        elif 'compcars' in self.cfg.dataset.name:
+            foldsdf_name = 'compcars'
+            foldsdf_ckpt_path = "../../pretrain/foldsdf_car.ckpt"
+        else:
+            raise NotImplementedError
+
         self.fold_sdf = FoldSDF(feat_dim=256, 
-                                ckpt_path="/home/anjie/Projects/FoldSDF/logs/2022-12-11T01-10-43_dev_texturify_car/checkpoints/last.ckpt",
-                                ignore_keys=['dpsr'])
+                                ckpt_path=foldsdf_ckpt_path,
+                                ignore_keys=['dpsr'],
+                                name=foldsdf_name,
+                                cfg=self.cfg)
 
         # rgb
         texture_decoder_out_channels = self.cfg.texture.feat_dim * 3
@@ -348,6 +360,8 @@ class SynthesisNetwork(torch.nn.Module):
         else:
             raise NotImplementedError(f"Uknown BG model type: {self.bg_model}")
 
+        self.tex_mapping = MappingNetwork(z_dim=self.tex_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws)
+
 
     def progressive_update(self, cur_kimg: float):
         self.nerf_noise_std = linear_schedule(cur_kimg, self.cfg.nerf_noise_std_init, 0.0, self.cfg.nerf_noise_kimg_growth)
@@ -359,7 +373,7 @@ class SynthesisNetwork(torch.nn.Module):
         """
         raise NotImplementedError
 
-    def forward(self, geo_ws, tex_ws, camera_angles: torch.Tensor, points: torch.Tensor=None, patch_params: Dict=None, max_batch_res: int=128, return_depth: bool=False, ignore_bg: bool=False, bg_only: bool=False, fov=None, verbose: bool=False, return_tex: bool=False, **block_kwargs):
+    def forward(self, z, camera_angles: torch.Tensor, points: torch.Tensor=None, patch_params: Dict=None, max_batch_res: int=128, return_depth: bool=False, ignore_bg: bool=False, bg_only: bool=False, fov=None, verbose: bool=False, return_tex: bool=False, **block_kwargs):
         """
         geo_ws: [batch_size, num_ws, w_dim] --- latent codes
         tex_ws: [batch_size, num_ws, w_dim] --- latent codes
@@ -377,6 +391,8 @@ class SynthesisNetwork(torch.nn.Module):
         else:
             raise ValueError
 
+        tex_ws = self.tex_mapping(tex_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+
         # camera_angles[:, [1]] = torch.clamp(camera_angles[:, [1]], 1e-5, np.pi - 1e-5) # [batch_size, 1]
 
 
@@ -386,13 +402,13 @@ class SynthesisNetwork(torch.nn.Module):
             tex_feats = self.texture_decoder(tex_ws[:, :self.texture_decoder.num_ws], **block_kwargs) # [batch_size, feat_dim, tp_h, tp_w]
 
         
-        batch_size = geo_ws.shape[0]
+        batch_size = tex_ws.shape[0]
         h = w = (self.train_resolution if self.training else self.test_resolution)
         fov = self.cfg.dataset.sampling.fov if fov is None else fov # [1] or [batch_size]
 
         self.fold_sdf.eval()
         with torch.no_grad():
-            points = points.to(geo_ws.device)
+            points = points.to(tex_ws.device)
             # batch_p_2d, folding_points, folding_normals, sdf_grid = self.fold_sdf(points)
             sdf_grid = self.fold_sdf.forward_gdt(points)
             sdf_grid = sdf_grid.view(batch_size, 1, *self.fold_sdf.dpsr.res)
@@ -403,7 +419,7 @@ class SynthesisNetwork(torch.nn.Module):
         nerf_noise_std = self.nerf_noise_std if self.training else 0.0
 
         z_vals, rays_d_cam = get_initial_rays_trig(
-            batch_size, num_steps, resolution=(h, w), device=geo_ws.device, ray_start=self.cfg.dataset.sampling.ray_start,
+            batch_size, num_steps, resolution=(h, w), device=tex_ws.device, ray_start=self.cfg.dataset.sampling.ray_start,
             ray_end=self.cfg.dataset.sampling.ray_end, fov=fov, patch_params=patch_params, radius=radius)
         c2w = compute_cam2world_matrix(camera_angles, radius) # [batch_size, 4, 4]
         points_world, z_vals, ray_d_world, ray_o_world = transform_points(z_vals=z_vals, ray_directions=rays_d_cam, c2w=c2w) # [batch_size, h * w, num_steps, 1], [?]
@@ -509,25 +525,21 @@ class Generator(torch.nn.Module):
         self.c_dim = c_dim
         self.w_dim = w_dim
         assert z_dim % 2 == 0
-        self.geo_dim = z_dim // 2
-        self.tex_dim = z_dim // 2
+        # self.geo_dim = z_dim // 2
+        # self.tex_dim = z_dim // 2
         self.img_resolution = img_resolution
         self.img_channels = img_channels
-        self.synthesis = SynthesisNetwork(cfg=cfg, w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
-        self.geo_num_ws = self.synthesis.num_ws + 1
-        self.tex_num_ws = self.synthesis.num_ws
-        self.geo_mapping = MappingNetwork(z_dim=self.geo_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.geo_num_ws, **mapping_kwargs)
-        self.tex_mapping = MappingNetwork(z_dim=self.tex_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.tex_num_ws, **mapping_kwargs)
+        self.synthesis = SynthesisNetwork(cfg=cfg, w_dim=w_dim, c_dim=c_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
+        # self.geo_num_ws = self.synthesis.num_ws + 1
+        # self.tex_num_ws = self.synthesis.num_ws
+        # self.geo_mapping = MappingNetwork(z_dim=self.geo_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.geo_num_ws, **mapping_kwargs)
+        # self.tex_mapping = MappingNetwork(z_dim=self.tex_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.tex_num_ws, **mapping_kwargs)
 
     def progressive_update(self, cur_kimg: float):
         self.synthesis.progressive_update(cur_kimg)
 
     def forward(self, z, p, camera_angles, c=None, camera_angles_cond=None, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
-        geo_z = z[...,:self.geo_dim]
-        tex_z = z[...,-self.tex_dim:]
-        geo_ws = self.geo_mapping(geo_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
-        tex_ws = self.tex_mapping(tex_z, c=c, camera_angles=camera_angles_cond, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
-        img = self.synthesis(geo_ws, tex_ws, points=p, camera_angles=camera_angles, update_emas=update_emas, **synthesis_kwargs)
+        img = self.synthesis(z, points=p, camera_angles=camera_angles, update_emas=update_emas, **synthesis_kwargs)
         return img
 
 #----------------------------------------------------------------------------

@@ -215,13 +215,16 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                 phase = {'Dreg': 'none', 'Dall': 'Dmain'}.get(phase, phase)
             blur_sigma = max(1 - cur_nimg / (self.blur_fade_kimg * 1e3), 0) * self.blur_init_sigma if self.blur_fade_kimg > 0 else 0
 
-            # phase = {'Dreg': 'none', 'Dall': 'none', 'Dmain': 'none'}.get(phase, phase)
-            # if phase in ['Gmain', 'Greg_mvc', 'Gall']:
-            #     with torch.autograd.profiler.record_function('Gmain_reconstruction'):
-            #         gen_img, _gen_ws, patch_params, info = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, verbose=True, points=points)
-            #         loss_Gmain = torch.nn.functional.mse_loss(gen_img, real_img).mean()
-            #         with torch.autograd.profiler.record_function('Gmain_backward'):
-            #             (loss_Gmain.mean()).mul(gain).backward() #  +loss_Gsdf.mean()+loss_Gcoverage.mean()
+            phase = {'Dreg': 'none', 'Dall': 'none', 'Dmain': 'none'}.get(phase, phase)
+            if phase in ['Gmain', 'Greg_mvc', 'Gall']:
+                with torch.autograd.profiler.record_function('Gmain_reconstruction'):
+                    gen_img, _gen_ws, patch_params, info = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, verbose=True, points=points)
+                    loss_Gmain = torch.nn.functional.mse_loss(gen_img, real_img).mean()
+                    training_stats.report('Loss/G/loss', loss_Gmain)
+
+                    with torch.autograd.profiler.record_function('Gmain_backward'):
+                        (loss_Gmain.mean()).mul(gain).backward() #  +loss_Gsdf.mean()+loss_Gcoverage.mean()
+            return 
 
             # Gmain: Maximize logits for generated images.
             if phase in ['Gmain', 'Greg_mvc', 'Gall']:
