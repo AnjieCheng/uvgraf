@@ -35,25 +35,6 @@ from src.training.vis_helper import *
 def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_world: torch.Tensor, 
                                 sdf_grid: torch.Tensor, folding_grid: torch.Tensor, folding_coords: torch.Tensor, folding_normals: torch.Tensor,
                                 texture_mlp: Callable, scale: float=1.0,  rt_sdf: bool=False, rt_radiance: bool=True, beta: torch.Tensor=None) -> torch.Tensor:
-    """
-    batch_size, raw_feat_dim, h, w = uv_x.shape
-    num_points = coords.shape[1]
-    feat_dim = raw_feat_dim // 3
-    uv_x = uv_x.view(batch_size * 3, feat_dim, h, w) # [batch_size * 3, feat_dim, h, w]
-    # coords = coords / scale # [batch_size, num_points, 3]
-    coords_ = coords / 0.85
-    coords_2d = torch.stack([
-        coords_[..., [0, 1]], # x/y plane
-        coords_[..., [0, 2]], # x/z plane
-        coords_[..., [1, 2]], # y/z plane
-    ], dim=1) # [batch_size, 3, num_points, 2]
-    coords_2d = coords_2d.view(batch_size * 3, 1, num_points, 2) # [batch_size * 3, 1, num_points, 2]
-    assert ((coords_2d.min().item() >= -1.0 - 1e-8) and (coords_2d.max().item() <= 1.0 + 1e-8))
-    rgbs_f = F.grid_sample(uv_x, grid=coords_2d, mode='bilinear', align_corners=True).view(batch_size, 3, num_points, feat_dim) # [batch_size, 3, feat_dim, num_points]
-    rgbs_f = rgbs_f.mean(1)
-    rgbs = texture_mlp(rgbs_f)
-    # x = x.permute(0, 1, 3, 2) # [batch_size, 3, num_points, feat_dim]
-    """
     # geo
     batch_size, num_uv, uv_feat_dim = uv_x.shape
     num_points = coords.shape[1]
@@ -63,14 +44,10 @@ def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_
     coords_normed = coords / 0.5
     # sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
     sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
-    
-    # beta = 0.005
-    alpha = 1 / beta
-    sigmas = alpha * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
+    sigmas = (1 / beta) * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
 
     # return torch.cat([rgbs, sigmas.detach()], dim=-1) 
     # sigmas = torch.sigmoid(-sdfs / 0.005) / 0.005
-
 
     K = 4
     dis, indices, _ = knn_points(coords.detach(), folding_coords.detach(), K=K)

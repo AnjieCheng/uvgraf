@@ -237,7 +237,7 @@ def training_loop(
             vis.grid_size, images, vis.camera_angles, masks, vis.points = setup_snapshot_image_grid(training_set=training_set, cfg=cfg)
             save_image_grid(images[:,:3,...], os.path.join(run_dir, 'reals.jpg'), drange=[0,255], grid_size=vis.grid_size)
             save_image_grid(masks[:,0:1,...], os.path.join(run_dir, 'reals_mask.jpg'), drange=[0,1], grid_size=vis.grid_size)
-            vis.grid_z = (torch.randn([images.shape[0], G.z_dim], device=device)*0).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, z_dim])
+            vis.grid_z = (torch.randn([images.shape[0], G.z_dim], device=device)).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, z_dim])
             vis.points = torch.from_numpy(vis.points).to(device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, c_dim])
             vis.grid_camera_angles = torch.from_numpy(vis.camera_angles).to(device).split(cfg.training.test_batch_gpu) # (num_batches, [batch_size, 3])
             save_filename = 'fakes_init.jpg'
@@ -302,7 +302,7 @@ def training_loop(
             phase_surface_points = surface_points.split(batch_gpu)
             phase_real_img = torch.cat([real_img, real_mask], dim=1).split(batch_gpu)
             phase_real_camera_angles = phase_real_camera_angles.to(device).split(batch_gpu) # (batch_size // batch_gpu, [batch_gpu, 3])
-            all_gen_z = (torch.randn([len(phases) * batch_size, G.z_dim], device=device)*0)
+            all_gen_z = (torch.randn([len(phases) * batch_size, G.z_dim], device=device))
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
             gen_cond_sample_idx = [np.random.randint(len(training_set)) for _ in range(len(phases) * batch_size)] # [num_phases * batch_size]
             if cfg.dataset.sampling.dist == 'custom':

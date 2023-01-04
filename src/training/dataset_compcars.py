@@ -112,7 +112,7 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         sampled_view = [available_views[vidx] for vidx in view_indices]
         image_indices = random.sample(list(range(total_selections)), self.views_per_sample)
         view_indices = [0]
-        image_indices = [1]
+        # image_indices = [1]
         image_selections = [f'{(iidx * 8 + vidx):05d}' for (iidx, vidx) in zip(image_indices, view_indices)]
 
         # get camera position
@@ -132,7 +132,7 @@ class ImageFolderDataset(torch.utils.data.Dataset):
 
         # Load point cloud here...
         # sparse_points = np.load(self.sparse_points_list[idx])
-        idx = 0
+        # idx = 0
         dense_points = np.load(self.point_cloud_paths[idx])
 
         # surface_points = sparse_points['points'].astype(np.float32)
@@ -264,4 +264,4 @@ def get_car_views():
                        0, 0,
                        -random.random() * math.pi / 28, -random.random() * math.pi / 28,
                        -random.random() * math.pi / 28, -random.random() * math.pi / 28,]
-    return [{'azimuth': a + an + math.pi, 'elevation': e, 'fov': f, 'cam_dist': cd} for a, an, e, en, cd, f in zip(azimuth, azimuth_noise, elevation, elevation_noise, camera_distance, fov)]
+    return [{'azimuth': a + an + math.pi, 'elevation': e + en, 'fov': f, 'cam_dist': cd} for a, an, e, en, cd, f in zip(azimuth, azimuth_noise, elevation, elevation_noise, camera_distance, fov)]
