@@ -39,6 +39,45 @@ def simple_tone_map(color, gamma=2.2, exposure=1):
 
 
 @misc.profiled_function
+def get_depth_z(sigmas, z_vals, last_back=False, clamp_mode=None, sp_beta: float=1.0, use_inf_depth: bool=True):
+    """
+    Performs NeRF volumetric rendering over features or colors.
+    Assumes that the last dimension is density.
+
+    rgb_sigma: [batch_size, h * w, num_steps, num_feats + 1] --- features to integrate
+    z_vals: [batch_size, h * w, num_steps, num_feats + 1] --- z-values
+    """
+    deltas = z_vals[:, :, 1:] - z_vals[:, :, :-1] # [batch_size, h * w, num_steps - 1, 1]
+    deltas_last = (1e10 if use_inf_depth else 1e-3) * torch.ones_like(deltas[:, :, [0]]) # [batch_size, h * w, 1, 1]
+    deltas = torch.cat([deltas, deltas_last], dim=2) # [batch_size, h * w, num_steps, 1]
+
+    if clamp_mode == 'softplus':
+        alphas = 1.0 - torch.exp(-deltas * F.softplus(sigmas, beta=sp_beta)) # [batch_size, h * w, num_steps, 1]
+    elif clamp_mode == 'relu':
+        alphas = 1.0 - torch.exp(-deltas * F.relu(sigmas)) # [batch_size, h * w, num_steps, 1]
+    else:
+        raise NotImplementedError(f"Uknown clamp mode: {clamp_mode}")
+
+    alphas_shifted = torch.cat([torch.ones_like(alphas[:, :, [0], :]), 1.0 - alphas + 1e-10], dim=2) # [batch_size, h * w, num_steps, 1]
+    transmittance = torch.cumprod(alphas_shifted, dim=2)[:, :, :-1] # [batch_size, h * w, num_steps, 1]
+    weights = alphas * transmittance # [batch_size, h * w, num_steps, 1]
+    weights_agg = weights.sum(dim=2) # [batch_size, h * w, 1]
+
+    if last_back:
+        weights[:, :, -1] += (1.0 - weights_agg) # [batch_size, h * w, 1]
+    # import pdb; pdb.set_trace()
+    depth = (weights * z_vals).sum(dim=2) # [batch_size, h * w, 1]
+
+    # rgb_final = simple_tone_map(rgb_final)
+
+    return {
+        'depth': depth,
+        'weights': weights,
+        'final_transmittance': transmittance[:, :, [-1], :].squeeze(3).squeeze(2), # [batch_size, h * w]
+    }
+
+
+@misc.profiled_function
 def fancy_integration(rgb_sigma, z_vals, noise_std=0.5, last_back=False, white_back_end_idx: int=0, clamp_mode=None, fill_mode=None, sp_beta: float=1.0, use_inf_depth: bool=True):
     """
     Performs NeRF volumetric rendering over features or colors.
@@ -50,12 +89,15 @@ def fancy_integration(rgb_sigma, z_vals, noise_std=0.5, last_back=False, white_b
     rgbs = rgb_sigma[..., :-1] # [batch_size, h * w, num_steps, num_feats]
     sigmas = rgb_sigma[..., [-1]] # [batch_size, h * w, num_steps, 1]
 
-    deltas = z_vals[:, :, 1:] - z_vals[:, :, :-1] # [batch_size, h * w, num_steps - 1, 1]
-    deltas_last = (1e10 if use_inf_depth else 1e-3) * torch.ones_like(deltas[:, :, [0]]) # [batch_size, h * w, 1, 1]
-    deltas = torch.cat([deltas, deltas_last], dim=2) # [batch_size, h * w, num_steps, 1]
-
-    if noise_std > 0:
-        sigmas = sigmas + noise_std * torch.randn_like(sigmas) # [batch_size, h * w, num_steps, 1]
+    if z_vals.size(2) == 1:
+        deltas = (1e10 if use_inf_depth else 1e-3) * torch.ones_like(z_vals) # [batch_size, h * w, 1, 1]
+        # deltas = torch.cat([deltas, deltas_last], dim=2) # [batch_size, h * w, num_steps, 1]
+    else:
+        deltas = z_vals[:, :, 1:] - z_vals[:, :, :-1] # [batch_size, h * w, num_steps - 1, 1]
+        deltas_last = (1e10 if use_inf_depth else 1e-3) * torch.ones_like(deltas[:, :, [0]]) # [batch_size, h * w, 1, 1]
+        deltas = torch.cat([deltas, deltas_last], dim=2) # [batch_size, h * w, num_steps, 1]
+    # if noise_std > 0:
+    #     sigmas = sigmas + noise_std * torch.randn_like(sigmas) # [batch_size, h * w, num_steps, 1]
 
     if clamp_mode == 'softplus':
         alphas = 1.0 - torch.exp(-deltas * F.softplus(sigmas, beta=sp_beta)) # [batch_size, h * w, num_steps, 1]

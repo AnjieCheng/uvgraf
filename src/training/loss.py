@@ -18,6 +18,8 @@ from src.torch_utils.ops import conv2d_gradfix
 from src.torch_utils.ops import upfirdn2d
 from src.training.training_utils import sample_patch_params, extract_patches, linear_schedule
 from torch.autograd import grad
+from src.training.inference_utils import save_image_grid
+
 # from chamferdist import ChamferDistance
 
 def gradient(y, x, grad_outputs=None):
@@ -81,17 +83,22 @@ class StyleGAN2Loss(Loss):
 
         return img_mask, ws, patch_params
 
-    def run_D(self, img_mask, blur_sigma=0, update_emas=False, **kwargs):
+    def run_D(self, img_mask, blur_sigma=0, key='None', update_emas=False, **kwargs):
         assert img_mask.size(1) == 4
         img = img_mask[:,:3,...]
         # mask = img_mask[:,3:4,...]
-        # blur_size = np.floor(blur_sigma * 3)
-        # if blur_size > 0:
-        #     with torch.autograd.profiler.record_function('blur'):
-        #         f = torch.arange(-blur_size, blur_size + 1, device=img.device).div(blur_sigma).square().neg().exp2()
-        #         img = upfirdn2d.filter2d(img, f / f.sum())
-        # if self.augment_pipe is not None:
-        #     img = self.augment_pipe(img, num_frames=img.shape[1] // self.G.img_channels) # [batch_size, c * 2, h, w]
+        blur_size = np.floor(blur_sigma * 3)
+        if blur_size > 0:
+            with torch.autograd.profiler.record_function('blur'):
+                f = torch.arange(-blur_size, blur_size + 1, device=img.device).div(blur_sigma).square().neg().exp2()
+                img = upfirdn2d.filter2d(img, f / f.sum())
+        # import pdb; pdb.set_trace()
+        # save_image_grid(mask[:4].detach().cpu(), key+'_mask.jpg', drange=[0,1], grid_size=(2,2))
+        # save_image_grid(img_mask[:,:3,...][:4].detach().cpu(), key+'_img.jpg', drange=[-1,1], grid_size=(2,2))
+        # save_image_grid(img[:4].detach().cpu(), key+'_img_blured.jpg', drange=[-1,1], grid_size=(2,2))
+        if self.augment_pipe is not None:
+            img = self.augment_pipe(img, num_frames=img.shape[1] // self.G.img_channels) # [batch_size, c * 2, h, w]
+        # save_image_grid(img[:4].detach().cpu(), key+'_img_blured_auged.jpg', drange=[-1,1], grid_size=(2,2))
         logits = self.D(img, update_emas=update_emas, **kwargs)
         return logits
 
@@ -226,11 +233,30 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
             #             (loss_Gmain.mean()).mul(gain).backward() #  +loss_Gsdf.mean()+loss_Gcoverage.mean()
             # return 
 
+            # Gpl: Apply path length regularization.
+            if phase in ['Greg_pl', 'Gall'] and self.cfg.model.loss_kwargs.pl_weight > 0:
+                with torch.autograd.profiler.record_function('Gpl_forward'):
+                    batch_size = gen_z.shape[0] // self.pl_batch_shrink
+                    # gen_img, gen_ws, _patch_params = self.run_G(gen_z[:batch_size], gen_c[:batch_size], gen_camera_angles[:batch_size], camera_angles_cond=gen_camera_angles_cond[:batch_size])
+                    gen_img, _gen_ws, patch_params = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, verbose=False, points=points)
+                    pl_noise = torch.randn_like(gen_img) / np.sqrt(gen_img.shape[2] * gen_img.shape[3])
+                    with torch.autograd.profiler.record_function('pl_grads'), conv2d_gradfix.no_weight_gradients():
+                        pl_grads = torch.autograd.grad(outputs=[(gen_img * pl_noise).sum()], inputs=[_gen_ws], create_graph=True, only_inputs=True)[0]
+                    pl_lengths = pl_grads.square().sum(2).mean(1).sqrt()
+                    pl_mean = self.pl_mean.lerp(pl_lengths.mean(), self.pl_decay)
+                    self.pl_mean.copy_(pl_mean.detach())
+                    pl_penalty = (pl_lengths - pl_mean).square()
+                    training_stats.report('Loss/pl_penalty', pl_penalty)
+                    loss_Gpl = pl_penalty * self.cfg.model.loss_kwargs.pl_weight
+                    training_stats.report('Loss/G/reg', loss_Gpl)
+                with torch.autograd.profiler.record_function('Gpl_backward'):
+                    loss_Gpl.mean().mul(gain).backward()
+
             # Gmain: Maximize logits for generated images.
             if phase in ['Gmain', 'Greg_mvc', 'Gall']:
                 with torch.autograd.profiler.record_function('Gmain_forward'):
                     gen_img, _gen_ws, patch_params, info = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, verbose=True, points=points)
-                    gen_logits = self.run_D(gen_img, blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=gen_camera_angles)
+                    gen_logits = self.run_D(gen_img, key="gen", blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=gen_camera_angles)
                     
                     training_stats.report('Loss/scores/fake', gen_logits)
                     training_stats.report('Loss/signs/fake', gen_logits.sign())
@@ -249,7 +275,7 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
             with torch.autograd.profiler.record_function('Dgen_forward'):
                 with torch.no_grad():
                     gen_img, _gen_ws, patch_params = self.run_G(gen_z, gen_camera_angles, camera_angles_cond=gen_camera_angles_cond, update_emas=True, points=points)
-                gen_logits = self.run_D(gen_img, blur_sigma=blur_sigma, update_emas=True, patch_params=patch_params, camera_angles=gen_camera_angles)
+                gen_logits = self.run_D(gen_img, key="gen", blur_sigma=blur_sigma, update_emas=True, patch_params=patch_params, camera_angles=gen_camera_angles)
                 
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
@@ -270,7 +296,7 @@ class CanonicalStyleGAN2Loss(StyleGAN2Loss):
                 with torch.autograd.profiler.record_function(name + '_forward'):
                     (real_img, patch_params) = self.extract_patches(real_img) if self.patch_cfg['enabled'] else (real_img, None)
                     real_img_tmp = real_img.detach().requires_grad_(phase in ['Dreg', 'Dall'])
-                    real_logits = self.run_D(real_img_tmp, blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=real_camera_angles)
+                    real_logits = self.run_D(real_img_tmp, key="real", blur_sigma=blur_sigma, patch_params=patch_params, camera_angles=real_camera_angles)
                     
                     training_stats.report('Loss/scores/real', real_logits)
                     training_stats.report('Loss/signs/real', real_logits.sign())

@@ -108,10 +108,9 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         total_selections = len(self.real_images_dict.keys()) // 8
         available_views = get_car_views()
         view_indices = random.sample(list(range(8)), self.views_per_sample)
-        view_indices = [0]
+        # view_indices = [4]
         sampled_view = [available_views[vidx] for vidx in view_indices]
         image_indices = random.sample(list(range(total_selections)), self.views_per_sample)
-        view_indices = [0]
         # image_indices = [1]
         image_selections = [f'{(iidx * 8 + vidx):05d}' for (iidx, vidx) in zip(image_indices, view_indices)]
 
@@ -183,7 +182,7 @@ class ImageFolderDataset(torch.utils.data.Dataset):
         # get_image_and_view
         available_views = get_car_views()
         view_indices = random.sample(list(range(8)), self.views_per_sample)
-        view_indices = [0]
+        # view_indices = [4]
         sampled_view = [available_views[vidx] for vidx in view_indices]
 
         # get camera position
@@ -264,4 +263,6 @@ def get_car_views():
                        0, 0,
                        -random.random() * math.pi / 28, -random.random() * math.pi / 28,
                        -random.random() * math.pi / 28, -random.random() * math.pi / 28,]
+    # azimuth_noise = [0]*8
+    # elevation_noise = [0]*8
     return [{'azimuth': a + an + math.pi, 'elevation': e + en, 'fov': f, 'cam_dist': cd} for a, an, e, en, cd, f in zip(azimuth, azimuth_noise, elevation, elevation_noise, camera_distance, fov)]

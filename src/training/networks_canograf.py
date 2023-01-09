@@ -21,15 +21,28 @@ from src.training.layers import (
     MappingNetwork,
     ScalarEncoder1d,
 )
+from src.training.inference_utils import save_image_grid
+
 from src.training.rendering import (
     fancy_integration,
     get_initial_rays_trig,
     transform_points,
     sample_pdf,
     compute_cam2world_matrix,
+    get_depth_z
 )
 from src.training.training_utils import *
 from src.training.vis_helper import *
+
+@misc.profiled_function
+def extract_density_from_sdf_grid(coords: torch.Tensor, sdf_grid: torch.Tensor, beta: torch.Tensor=None) -> torch.Tensor:
+    batch_size, num_points = coords.shape[0], coords.shape[1]
+    coords_normed = coords / 0.5
+    # sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
+    sdfs = F.grid_sample(sdf_grid, coords_normed.view(batch_size, 1, 1, num_points, 3), padding_mode="border").view(batch_size, num_points, 1)
+    sigmas = (1 / beta) * (0.5 + 0.5 * (sdfs).sign() * torch.expm1(-(sdfs).abs() / beta))
+    return sigmas.detach()
+
 
 @misc.profiled_function
 def canonical_renderer_pretrain(uv_x: torch.Tensor, coords: torch.Tensor, ray_d_world: torch.Tensor, 
@@ -306,9 +319,9 @@ class SynthesisNetwork(torch.nn.Module):
         # misc.assert_shape(camera_angles, [len(geo_ws), 3])
         if not self.training:
             # max_batch_res = 32
-            foldsdf_level = 4
+            foldsdf_level = 5
         else:
-            foldsdf_level = 4
+            foldsdf_level = 5
 
         if camera_angles.size(1) == 3:
             radius = self.cfg.dataset.sampling.radius
@@ -387,7 +400,8 @@ class SynthesisNetwork(torch.nn.Module):
         num_steps = self.cfg.num_ray_steps
         rgb_sigma_out_dim = 4
         white_back_end_idx = self.img_channels if self.cfg.dataset.white_back else 0
-        nerf_noise_std = self.nerf_noise_std if self.training else 0.0
+        # nerf_noise_std = self.nerf_noise_std if self.training else 0.0
+        nerf_noise_std = 0.0
 
         # if self.training:
         #     print(camera_angles)
@@ -400,18 +414,45 @@ class SynthesisNetwork(torch.nn.Module):
         points_world, z_vals, ray_d_world, ray_o_world = transform_points(z_vals=z_vals, ray_directions=rays_d_cam, c2w=c2w) # [batch_size, h * w, num_steps, 1], [?]
         points_world = points_world.reshape(batch_size, h * w * num_steps, 3) # [batch_size, h * w * num_steps, 3]
 
-        coarse_output = run_batchwise(
-            fn=canonical_renderer_pretrain, data=dict(coords=points_world),
+        extract_density_from_sdf_grid
+        density_output = run_batchwise(
+            fn=extract_density_from_sdf_grid, data=dict(coords=points_world),
             batch_size=max_batch_res ** 2 * num_steps, dim=1, 
+            sdf_grid=sdf_grid, beta=self.beta
+        ) # [batch_size, h * w * num_steps, num_feats]
+        density_output = density_output.view(batch_size, h * w, num_steps, 1) # [batch_size, h * w, num_steps, num_feats] | rgbs, sigmas, f_pts, b_pts
+        
+        # <==================================================>
+        # GET DEPTH FOR EACH PIXEL
+        depth_z = run_batchwise(
+            fn=get_depth_z,
+            data=dict(sigmas=density_output, z_vals=z_vals),
+            batch_size=max_batch_res ** 2,
+            dim=1,
+            clamp_mode=self.cfg.clamp_mode, use_inf_depth=self.cfg.bg_model.type is None,
+        )['depth'] # [batch_size, h * w, num_steps, 1]
+        depth_z = depth_z.reshape(batch_size, h * w, 1, 1)  # [batch_size * h * w, 1]
+
+        intersect_points = ray_o_world.unsqueeze(2).contiguous() + ray_d_world.unsqueeze(2).contiguous() * depth_z.expand(-1, -1, -1, 3).contiguous()
+        intersect_points = intersect_points.reshape(batch_size, h * w * 1, 3)
+
+        coarse_output = run_batchwise(
+            fn=canonical_renderer_pretrain, data=dict(coords=intersect_points),
+            batch_size=max_batch_res ** 2 * 1, dim=1, 
             texture_mlp=self.texture_mlp, uv_x=uv_feats, 
             scale=self.cfg.dataset.cube_scale, ray_d_world=ray_d_world,
             folding_grid=batch_p_2d, folding_coords=folding_points, folding_normals=folding_normals, sdf_grid=sdf_grid,
             beta=self.beta
         ) # [batch_size, h * w * num_steps, num_feats]
-        coarse_output = coarse_output.view(batch_size, h * w, num_steps, rgb_sigma_out_dim) # [batch_size, h * w, num_steps, num_feats] | rgbs, sigmas, f_pts, b_pts
+        coarse_output = coarse_output.view(batch_size, h * w, 1, rgb_sigma_out_dim) # [batch_size, h * w, num_steps, num_feats] | rgbs, sigmas, f_pts, b_pts
         coarse_rgb_sigma = coarse_output[...,:rgb_sigma_out_dim]
 
+        # Combine coarse and fine points and sort by z_values
+        _, indices = torch.sort(depth_z, dim=2) # [batch_size, h * w, 2 * num_steps, 1]
+        all_z_vals = torch.gather(depth_z, dim=2, index=indices) # [batch_size, h * w, 2 * num_steps, 1]
+        all_rgb_sigma = torch.gather(coarse_rgb_sigma, dim=2, index=indices.expand(-1, -1, -1, rgb_sigma_out_dim)) # [batch_size, h * w, 2 * num_steps, tri_plane_out_dim + 1]
 
+        """
         # <==================================================>
         # HIERARCHICAL SAMPLING START
         points_world = points_world.reshape(batch_size, h * w, num_steps, 3) # [batch_size, h * w, num_steps, 3]
@@ -447,7 +488,7 @@ class SynthesisNetwork(torch.nn.Module):
 
         fine_rgb_sigma = fine_output[...,:rgb_sigma_out_dim]
         fine_points = fine_points.reshape(batch_size, h * w, num_steps, 3) # [batch_size, h * w, num_steps, 3]
-
+        
         # Combine coarse and fine points and sort by z_values
         all_rgb_sigma = torch.cat([fine_rgb_sigma, coarse_rgb_sigma], dim=2) # [batch_size, h * w, 2 * num_steps, tri_plane_out_dim + 1]
         all_z_vals = torch.cat([fine_z_vals, z_vals], dim=2) # [batch_size, h * w, 2 * num_steps, 1]
@@ -456,6 +497,7 @@ class SynthesisNetwork(torch.nn.Module):
         all_rgb_sigma = torch.gather(all_rgb_sigma, dim=2, index=indices.expand(-1, -1, -1, rgb_sigma_out_dim)) # [batch_size, h * w, 2 * num_steps, tri_plane_out_dim + 1]
         # HIERARCHICAL SAMPLING END
         # <==================================================>
+        """
 
         int_out: Dict = run_batchwise(
             fn=fancy_integration,
@@ -472,6 +514,17 @@ class SynthesisNetwork(torch.nn.Module):
         img = img.reshape(batch_size, h, w, img.shape[2]) # [batch_size, h, w, 1 | tri_plane_out_dim - 1]
         img = img.permute(0, 3, 1, 2).contiguous() # [batch_size, 1 | mlp_out_dim, h, w]
         mask = int_out['final_transmittance'].reshape(batch_size, h, w, 1).permute(0, 3, 1, 2).contiguous()
+
+        # if self.training:
+        #     # import pdb; pdb.set_trace()
+        #     save_image_grid(mask[:4].detach().cpu(), 'Gout_mask.jpg', drange=[0,1], grid_size=(2,2))
+        #     save_image_grid(img[:4].detach().cpu(), 'Gout_img.jpg', drange=[-1,1], grid_size=(2,2))
+
+        # if not self.training:
+        #     # import pdb; pdb.set_trace()
+        #     save_image_grid(mask[:4].detach().cpu(), 'GoutT_mask.jpg', drange=[0,1], grid_size=(2,2))
+        #     save_image_grid(img[:4].detach().cpu(), 'GoutT_img.jpg', drange=[-1,1], grid_size=(2,2))
+
         img = torch.cat([img, mask], dim=1)
 
         if verbose:

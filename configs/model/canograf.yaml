@@ -64,4 +64,4 @@ generator:
 
 loss_kwargs:
   blur_init_sigma: 10
-  blur_fade_kimg: 200
+  blur_fade_kimg: 1000

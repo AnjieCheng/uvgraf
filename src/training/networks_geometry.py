@@ -813,12 +813,12 @@ class DPSR(nn.Module):
         self.sig = sig
         self.dim = len(res)
         self.denom = np.prod(res)
-        G = spec_gaussian_filter(res=res, sig=sig).float()
-        # self.G.requires_grad = False # True, if we also make sig a learnable parameter
+        self.G = spec_gaussian_filter(res=res, sig=sig).float()
+        self.G.requires_grad = False # True, if we also make sig a learnable parameter
         self.omega = fftfreqs(res, dtype=torch.float32)
         self.scale = scale
         self.shift = shift
-        self.register_buffer("G", G)
+        # self.register_buffer("G", G)
         
     def forward(self, V, N):
         """
@@ -831,7 +831,7 @@ class DPSR(nn.Module):
         
         ras_s = torch.fft.rfftn(ras_p, dim=(2,3,4))
         ras_s = ras_s.permute(*tuple([0]+list(range(2, self.dim+1))+[self.dim+1, 1]))
-        N_ = ras_s[..., None] * self.G # [b, dim0, dim1, dim2/2+1, n_dim, 1]
+        N_ = ras_s[..., None] * self.G.to(ras_s.device) # [b, dim0, dim1, dim2/2+1, n_dim, 1]
 
         omega = fftfreqs(self.res, dtype=torch.float32).unsqueeze(-1) # [dim0, dim1, dim2/2+1, n_dim, 1]
         omega *= 2 * np.pi  # normalize frequencies
